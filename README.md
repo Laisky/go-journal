@@ -1,2 +1,4 @@
-# go-journal
-WAL log
+# Go-Journal
+
+seperated from `go-utils/journal`.
+
