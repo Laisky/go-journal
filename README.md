@@ -1,0 +1,2 @@
+# go-journal
+WAL log
