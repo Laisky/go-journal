@@ -1,4 +1,4 @@
-package journal_test
+package journal
 
 import (
 	"bufio"
@@ -11,7 +11,6 @@ import (
 	"testing"
 
 	utils "github.com/Laisky/go-utils"
-	"github.com/Laisky/go-utils/journal"
 	"github.com/ugorji/go/codec"
 )
 
@@ -25,11 +24,11 @@ func TestSerializer(t *testing.T) {
 		defer os.Remove(fp.Name())
 		t.Logf("create file name: %v", fp.Name())
 
-		m := &journal.Data{
+		m := &Data{
 			Data: map[string]interface{}{"tag": "testtag", "message": 123},
 		}
 
-		encoder, err := journal.NewDataEncoder(fp, isCompress)
+		encoder, err := NewDataEncoder(fp, isCompress)
 		if err != nil {
 			t.Fatalf("%+v", err)
 		}
@@ -40,12 +39,12 @@ func TestSerializer(t *testing.T) {
 			t.Fatalf("%+v", err)
 		}
 
-		var got = &journal.Data{}
+		var got = &Data{}
 		if _, err = fp.Seek(0, 0); err != nil {
 			t.Fatalf("seek: %+v", err)
 		}
-		var decoder *journal.DataDecoder
-		if decoder, err = journal.NewDataDecoder(fp, isCompress); err != nil {
+		var decoder *DataDecoder
+		if decoder, err = NewDataDecoder(fp, isCompress); err != nil {
 			t.Fatalf("%+v", err)
 		}
 		if err = decoder.Read(got); err != nil {
@@ -68,10 +67,10 @@ func BenchmarkSerializerWithCompress(b *testing.B) {
 	defer fp.Close()
 	defer os.Remove(fp.Name())
 	b.Logf("create file name: %v", fp.Name())
-	m := &journal.Data{
+	m := &Data{
 		Data: map[string]interface{}{"tag": "tag", "message": "jr32oirj23r2ifj32ofjfwefefwfwfwefwefwef 234rt34t 34t 34t43t 34t o2jfo2fjof2"},
 	}
-	encoder, err := journal.NewDataEncoder(fp, true)
+	encoder, err := NewDataEncoder(fp, true)
 	if err != nil {
 		b.Fatalf("%+v", err)
 	}
@@ -90,14 +89,14 @@ func BenchmarkSerializerWithCompress(b *testing.B) {
 		b.Fatalf("seek: %+v", err)
 	}
 	n := 0
-	decoder, err := journal.NewDataDecoder(fp, true)
+	decoder, err := NewDataDecoder(fp, true)
 	if err != nil {
 		b.Fatalf("%+v", err)
 	}
 	b.Run("data decoder with compress", func(b *testing.B) {
 		for i := 0; i < b.N; i++ {
 			n++
-			v := &journal.Data{}
+			v := &Data{}
 			if err = decoder.Read(v); err == io.EOF {
 				return
 			} else if err != nil {
@@ -122,10 +121,10 @@ func BenchmarkSerializerWithoutCompress(b *testing.B) {
 	defer fp.Close()
 	defer os.Remove(fp.Name())
 	b.Logf("create file name: %v", fp.Name())
-	m := &journal.Data{
+	m := &Data{
 		Data: map[string]interface{}{"tag": "tag", "message": "jr32oirj23r2ifj32ofjfwefefwfwfwefwefwef 234rt34t 34t 34t43t 34t o2jfo2fjof2"},
 	}
-	encoder, err := journal.NewDataEncoder(fp, false)
+	encoder, err := NewDataEncoder(fp, false)
 	if err != nil {
 		b.Fatalf("%+v", err)
 	}
@@ -144,14 +143,14 @@ func BenchmarkSerializerWithoutCompress(b *testing.B) {
 		b.Fatalf("seek: %+v", err)
 	}
 	n := 0
-	decoder, err := journal.NewDataDecoder(fp, false)
+	decoder, err := NewDataDecoder(fp, false)
 	if err != nil {
 		b.Fatalf("%+v", err)
 	}
 	b.Run("decoder with compress", func(b *testing.B) {
 		for i := 0; i < b.N; i++ {
 			n++
-			v := &journal.Data{}
+			v := &Data{}
 			if err = decoder.Read(v); err == io.EOF {
 				return
 			} else if err != nil {
@@ -178,7 +177,7 @@ func TestIdsSerializer(t *testing.T) {
 		defer os.Remove(fp.Name())
 		t.Logf("create file name: %v", fp.Name())
 
-		encoder, err := journal.NewIdsEncoder(fp, isCompress)
+		encoder, err := NewIdsEncoder(fp, isCompress)
 		if err != nil {
 			t.Fatalf("%+v", err)
 		}
@@ -213,7 +212,7 @@ func TestIdsSerializer(t *testing.T) {
 		if _, err = fp.Seek(0, 0); err != nil {
 			t.Fatalf("seek: %+v", err)
 		}
-		decoder, err := journal.NewIdsDecoder(fp, isCompress)
+		decoder, err := NewIdsDecoder(fp, isCompress)
 		if err != nil {
 			t.Fatalf("got error: %+v", err)
 		}

@@ -3,7 +3,7 @@ module github.com/Laisky/go-journal
 go 1.13
 
 require (
-	github.com/Laisky/go-utils v1.10.2
+	github.com/Laisky/go-utils v1.11.2
 	github.com/Laisky/zap v1.12.2
 	github.com/RoaringBitmap/roaring v0.4.21
 	github.com/coreos/etcd v3.3.18+incompatible

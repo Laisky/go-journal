@@ -1,4 +1,4 @@
-package journal_test
+package journal
 
 import (
 	"context"
@@ -8,12 +8,10 @@ import (
 	"os"
 	"testing"
 	"time"
-
-	"github.com/Laisky/go-utils/journal"
 )
 
 const (
-	defaultIDTTL = 5 * time.Minute
+	testIDTTL = 5 * time.Minute
 )
 
 func TestLegacy(t *testing.T) {
@@ -60,28 +58,28 @@ func TestLegacy(t *testing.T) {
 		t.Logf("create file name: %v", idsFp2.Name())
 
 		// put data
-		dataEncoder, err := journal.NewDataEncoder(dataFp1, isCompress)
+		dataEncoder, err := NewDataEncoder(dataFp1, isCompress)
 		if err != nil {
 			t.Fatalf("%+v", err)
 		}
-		if err = dataEncoder.Write(&journal.Data{Data: map[string]interface{}{"data": "data 1"}, ID: 1}); err != nil {
+		if err = dataEncoder.Write(&Data{Data: map[string]interface{}{"data": "data 1"}, ID: 1}); err != nil {
 			t.Fatalf("write: %+v", err)
 		}
-		if err = dataEncoder.Write(&journal.Data{Data: map[string]interface{}{"data": "data 2"}, ID: 2}); err != nil {
+		if err = dataEncoder.Write(&Data{Data: map[string]interface{}{"data": "data 2"}, ID: 2}); err != nil {
 			t.Fatalf("write: %+v", err)
 		}
 		if err = dataEncoder.Flush(); err != nil {
 			t.Fatalf("got error: %+v", err)
 		}
 
-		dataEncoder, err = journal.NewDataEncoder(dataFp2, isCompress)
+		dataEncoder, err = NewDataEncoder(dataFp2, isCompress)
 		if err != nil {
 			t.Fatalf("%+v", err)
 		}
-		if err = dataEncoder.Write(&journal.Data{Data: map[string]interface{}{"data": "data 21"}, ID: 21}); err != nil {
+		if err = dataEncoder.Write(&Data{Data: map[string]interface{}{"data": "data 21"}, ID: 21}); err != nil {
 			t.Fatalf("write: %+v", err)
 		}
-		if err = dataEncoder.Write(&journal.Data{Data: map[string]interface{}{"data": "data 22"}, ID: 22}); err != nil {
+		if err = dataEncoder.Write(&Data{Data: map[string]interface{}{"data": "data 22"}, ID: 22}); err != nil {
 			t.Fatalf("write: %+v", err)
 		}
 		if err = dataEncoder.Flush(); err != nil {
@@ -90,7 +88,7 @@ func TestLegacy(t *testing.T) {
 
 		// put ids
 		// except 2
-		idsEncoder, err := journal.NewIdsEncoder(idsFp1, isCompress)
+		idsEncoder, err := NewIdsEncoder(idsFp1, isCompress)
 		if err != nil {
 			t.Fatalf("%+v", err)
 		}
@@ -104,7 +102,7 @@ func TestLegacy(t *testing.T) {
 			t.Fatalf("got error: %+v", err)
 		}
 
-		idsEncoder, err = journal.NewIdsEncoder(idsFp2, isCompress)
+		idsEncoder, err = NewIdsEncoder(idsFp2, isCompress)
 		if err != nil {
 			t.Fatalf("%+v", err)
 		}
@@ -121,16 +119,16 @@ func TestLegacy(t *testing.T) {
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		legacy := journal.NewLegacyLoader(
+		legacy := NewLegacyLoader(
 			ctx,
 			[]string{dataFp1.Name(), dataFp2.Name()},
 			[]string{idsFp1.Name(), idsFp2.Name()},
 			isCompress,
-			defaultIDTTL,
+			testIDTTL,
 		)
-		idmaps := journal.NewInt64SetWithTTL(
+		idmaps := NewInt64SetWithTTL(
 			ctx,
-			defaultIDTTL)
+			testIDTTL)
 		if err = legacy.LoadAllids(idmaps); err != nil {
 			t.Fatalf("%+v", err)
 		}
@@ -150,7 +148,7 @@ func TestLegacy(t *testing.T) {
 
 		dataIds := []int64{}
 		for {
-			data := journal.Data{}
+			data := Data{}
 			err = legacy.Load(&data)
 			if err == io.EOF {
 				break
@@ -179,23 +177,23 @@ func TestEmptyLegacy(t *testing.T) {
 		defer os.RemoveAll(dir)
 
 		ctx := context.Background()
-		legacy := journal.NewLegacyLoader(
+		legacy := NewLegacyLoader(
 			ctx,
 			[]string{},
 			[]string{},
 			isCompress,
-			defaultIDTTL,
+			testIDTTL,
 		)
-		ids := journal.NewInt64SetWithTTL(
+		ids := NewInt64SetWithTTL(
 			ctx,
-			defaultIDTTL)
+			testIDTTL)
 		err = legacy.LoadAllids(ids)
 		if err != nil {
 			t.Fatalf("got error: %+v", err)
 		}
 		t.Logf("load ids: %+v", ids)
 
-		data := journal.Data{}
+		data := Data{}
 		for {
 			if err = legacy.Load(&data); err == io.EOF {
 				return

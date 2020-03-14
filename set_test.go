@@ -1,4 +1,4 @@
-package journal_test
+package journal
 
 import (
 	"context"
@@ -8,12 +8,11 @@ import (
 	"time"
 
 	"github.com/Laisky/go-utils"
-
-	"github.com/Laisky/go-utils/journal"
+	"github.com/RoaringBitmap/roaring"
 )
 
 func TestNewInt64Set(t *testing.T) {
-	s := journal.NewInt64Set()
+	s := NewInt64Set()
 	for i := int64(0); i < 10; i++ {
 		s.AddInt64(i)
 	}
@@ -40,7 +39,7 @@ func TestInt64SetWithTTL(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	s := journal.NewInt64SetWithTTL(
+	s := NewInt64SetWithTTL(
 		ctx,
 		1*time.Second)
 	for i := int64(0); i < 10; i++ {
@@ -68,7 +67,7 @@ func TestInt64SetWithTTL(t *testing.T) {
 }
 
 func TestNewUint32Set(t *testing.T) {
-	s := journal.NewUint32Set()
+	s := NewUint32Set()
 	for i := uint32(0); i < 10; i++ {
 		s.AddUint32(i)
 	}
@@ -91,7 +90,7 @@ func TestNewUint32Set(t *testing.T) {
 func TestValidateInt64SetWithTTL(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	s := journal.NewInt64SetWithTTL(ctx, 1*time.Second)
+	s := NewInt64SetWithTTL(ctx, 1*time.Second)
 	wg := &sync.WaitGroup{}
 	pool := &sync.Map{}
 	padding := struct{}{}
@@ -128,7 +127,7 @@ func TestValidateInt64SetWithTTL(t *testing.T) {
 }
 
 func ExampleInt64Set() {
-	s := journal.NewInt64Set()
+	s := NewInt64Set()
 	s.Add(5)
 
 	s.CheckAndRemove(5) // true
@@ -149,7 +148,7 @@ func BenchmarkInt64SetWithTTL(b *testing.B) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	s := journal.NewInt64SetWithTTL(
+	s := NewInt64SetWithTTL(
 		ctx,
 		10*time.Second)
 	b.Run("add", func(b *testing.B) {
@@ -204,7 +203,7 @@ BenchmarkInt64Set/remove-4      	10000000	       193 ns/op	       0 B/op	       
 BenchmarkInt64Set/parallel-4    	  500000	      4336 ns/op	     343 B/op	       8 allocs/op
 */
 func BenchmarkInt64Set(b *testing.B) {
-	s := journal.NewInt64Set()
+	s := NewInt64Set()
 	b.Run("add", func(b *testing.B) {
 		for i := 0; i < b.N; i++ {
 			s.AddInt64(rand.Int63())
@@ -246,5 +245,91 @@ func BenchmarkInt64Set(b *testing.B) {
 				s.CheckAndRemove(rand.Int63())
 			}
 		})
+	})
+}
+
+func BenchmarkMap(b *testing.B) {
+	m := map[string]struct{}{}
+	sm := sync.Map{}
+	// s := mapset.NewSet()
+	rm := roaring.New()
+	var k string
+	b.Run("map add", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			m[utils.RandomStringWithLength(20)] = struct{}{}
+		}
+	})
+	b.Run("sync map add", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			sm.Store(utils.RandomStringWithLength(20), struct{}{})
+		}
+	})
+	b.Run("bitmap add", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			rm.AddInt(rand.Int())
+		}
+	})
+	// b.Run("set add", func(b *testing.B) {
+	// 	for i := 0; i < b.N; i++ {
+	// 		s.Add(utils.RandomStringWithLength(20))
+	// 	}
+	// })
+	b.Run("map get", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			k = utils.RandomStringWithLength(20)
+			_ = m[k]
+			delete(m, k)
+		}
+	})
+	b.Run("sync map get", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			k = utils.RandomStringWithLength(20)
+			sm.Load(k)
+			sm.Delete(k)
+		}
+	})
+	b.Run("bitmap get", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			rm.ContainsInt(rand.Int())
+			rm.Remove(rand.Uint32())
+		}
+	})
+	// b.Run("set get", func(b *testing.B) {
+	// 	for i := 0; i < b.N; i++ {
+	// 		k = utils.RandomStringWithLength(20)
+	// 		s.Contains(k)
+	// 		s.Remove(k)
+	// 	}
+	// })
+}
+
+func BenchmarkSet(b *testing.B) {
+	s1 := &sync.Map{}
+	s2 := &sync.Map{}
+	load := struct{}{}
+	var k int
+	b.Run("simple", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			s1.Store(rand.Int(), load)
+		}
+	})
+	b.Run("simple remove", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			k = rand.Int()
+			s1.Load(k)
+			s1.Delete(k)
+		}
+	})
+	b.Run("bool", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			s2.Store(rand.Int(), true)
+		}
+	})
+	b.Run("bool remove", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			k = rand.Int()
+			s2.Load(k)
+			s2.Store(k, false)
+		}
 	})
 }

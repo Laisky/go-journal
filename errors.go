@@ -3,6 +3,6 @@ package journal
 import "fmt"
 
 var (
-	// DuringRotateErr rotate error
-	DuringRotateErr = fmt.Errorf("during rotating")
+	// ErrDuringRotate rotate error
+	ErrDuringRotate = fmt.Errorf("during rotating")
 )

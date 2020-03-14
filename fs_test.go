@@ -1,25 +1,25 @@
-package journal_test
+package journal
 
 import (
+	"bufio"
+	"context"
+	"io"
 	"io/ioutil"
 	"log"
 	"os"
 	"testing"
 	"time"
 
-	"github.com/ncw/directio"
-
-	"github.com/coreos/etcd/pkg/fileutil"
-
 	utils "github.com/Laisky/go-utils"
-	"github.com/Laisky/go-utils/journal"
+	"github.com/coreos/etcd/pkg/fileutil"
+	"github.com/ncw/directio"
 )
 
 const (
-	defaultBufFileSizeBytes = 1000000
+	testBufFileSizeBytes = 1000000
 )
 
-type FNameCase struct {
+type testFNameCase struct {
 	OldFName, ExpectFName, NowTS string
 }
 
@@ -28,7 +28,7 @@ func TestGenerateNewBufFName(t *testing.T) {
 		err      error
 		now      time.Time
 		newFName string
-		cases    = []*FNameCase{
+		cases    = []*testFNameCase{
 			{
 				OldFName:    "20060102_00000001.buf",
 				ExpectFName: "20060102_00000002.buf",
@@ -57,7 +57,7 @@ func TestGenerateNewBufFName(t *testing.T) {
 		if err != nil {
 			t.Fatalf("got error: %+v", err)
 		}
-		newFName, err = journal.GenerateNewBufFName(now, testcase.OldFName, false)
+		newFName, err = GenerateNewBufFName(now, testcase.OldFName, false)
 		if err != nil {
 			t.Fatalf("got error: %+v", err)
 		}
@@ -75,7 +75,7 @@ func TestPrepareNewBufFile(t *testing.T) {
 	t.Logf("create directory: %v", dir)
 	defer os.RemoveAll(dir)
 
-	bufStat, err := journal.PrepareNewBufFile(dir, nil, true, false, defaultBufFileSizeBytes)
+	bufStat, err := PrepareNewBufFile(dir, nil, true, false, testBufFileSizeBytes)
 	if err != nil {
 		t.Fatalf("got error: %+v", err)
 	}
@@ -113,7 +113,7 @@ func BenchmarkFSPreallocate(b *testing.B) {
 		b.Fatalf("set level: %+v", err)
 	}
 	// create data files
-	dataFp1, err := directio.OpenFile(benchmarkFsDir+"fp1.dat", os.O_RDWR|os.O_CREATE, journal.FileMode)
+	dataFp1, err := directio.OpenFile(benchmarkFsDir+"fp1.dat", os.O_RDWR|os.O_CREATE, FileMode)
 	// dataFp1, err := ioutil.TempFile("", "journal-test")
 	if err != nil {
 		b.Fatalf("%+v", err)
@@ -122,7 +122,7 @@ func BenchmarkFSPreallocate(b *testing.B) {
 	defer os.Remove(dataFp1.Name())
 	b.Logf("create file name: %v", dataFp1.Name())
 
-	dataFp2, err := directio.OpenFile(benchmarkFsDir+"fp2.dat", os.O_RDWR|os.O_CREATE, journal.FileMode)
+	dataFp2, err := directio.OpenFile(benchmarkFsDir+"fp2.dat", os.O_RDWR|os.O_CREATE, FileMode)
 	if err != nil {
 		b.Fatalf("%+v", err)
 	}
@@ -130,7 +130,7 @@ func BenchmarkFSPreallocate(b *testing.B) {
 	defer os.Remove(dataFp2.Name())
 	b.Logf("create file name: %v", dataFp2.Name())
 
-	dataFp3, err := directio.OpenFile(benchmarkFsDir+"fp3.dat", os.O_RDWR|os.O_CREATE, journal.FileMode)
+	dataFp3, err := directio.OpenFile(benchmarkFsDir+"fp3.dat", os.O_RDWR|os.O_CREATE, FileMode)
 	if err != nil {
 		b.Fatalf("%+v", err)
 	}
@@ -174,4 +174,163 @@ func BenchmarkFSPreallocate(b *testing.B) {
 		}
 	})
 
+}
+
+func BenchmarkWrite(b *testing.B) {
+	fp, err := ioutil.TempFile("", "fs-test")
+	if err != nil {
+		b.Fatalf("%+v", err)
+	}
+	// fp, err := os.OpenFile("/data/go/src/github.com/Laisky/go-utils/journal/benchmark/test/test.data", os.O_RDWR|os.O_CREATE, 0664)
+	// if err != nil {
+	// 	b.Fatalf("got error: %+v", err)
+	// }
+	defer fp.Close()
+	defer os.Remove(fp.Name())
+	b.Logf("create file name: %v", fp.Name())
+
+	data2K := []byte(utils.RandomStringWithLength(2048))
+	b.Run("direct write", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			if _, err = fp.Write(data2K); err != nil {
+				b.Fatalf("got error: %+v", err)
+			}
+		}
+	})
+
+	fpBuf := bufio.NewWriter(fp)
+	b.Run("write default buf", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			if _, err = fpBuf.Write(data2K); err != nil {
+				b.Fatalf("got error: %+v", err)
+			}
+		}
+	})
+
+	b.Run("write default buf with flush", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			if _, err = fpBuf.Write(data2K); err != nil {
+				b.Fatalf("got error: %+v", err)
+			}
+			if err = fpBuf.Flush(); err != nil {
+				b.Fatalf("got error: %+v", err)
+			}
+		}
+	})
+
+	fpBuf4KB := bufio.NewWriterSize(fp, 1024*4)
+	b.Run("write 4KB buf", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			if _, err = fpBuf4KB.Write(data2K); err != nil {
+				b.Fatalf("got error: %+v", err)
+			}
+			if err = fpBuf4KB.Flush(); err != nil {
+				b.Fatalf("got error: %+v", err)
+			}
+		}
+	})
+
+	fpBuf8KB := bufio.NewWriterSize(fp, 1024*8)
+	b.Run("write 8KB buf", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			if _, err = fpBuf8KB.Write(data2K); err != nil {
+				b.Fatalf("got error: %+v", err)
+			}
+			if err = fpBuf8KB.Flush(); err != nil {
+				b.Fatalf("got error: %+v", err)
+			}
+		}
+	})
+
+	fpBuf16KB := bufio.NewWriterSize(fp, 1024*16)
+	b.Run("write 16KB buf", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			if _, err = fpBuf16KB.Write(data2K); err != nil {
+				b.Fatalf("got error: %+v", err)
+			}
+			if err = fpBuf16KB.Flush(); err != nil {
+				b.Fatalf("got error: %+v", err)
+			}
+		}
+	})
+
+	fpBuf1M := bufio.NewWriterSize(fp, 1024*1024)
+	b.Run("write 1M buf", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			if _, err = fpBuf1M.Write(data2K); err != nil {
+				b.Fatalf("got error: %+v", err)
+			}
+			if err = fpBuf1M.Flush(); err != nil {
+				b.Fatalf("got error: %+v", err)
+			}
+		}
+	})
+
+	fpBuf4M := bufio.NewWriterSize(fp, 1024*1024*4)
+	b.Run("write 4M buf", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			if _, err = fpBuf4M.Write(data2K); err != nil {
+				b.Fatalf("got error: %+v", err)
+			}
+			if err = fpBuf4M.Flush(); err != nil {
+				b.Fatalf("got error: %+v", err)
+			}
+		}
+	})
+
+}
+
+func BenchmarkData(b *testing.B) {
+	dir, err := ioutil.TempDir("", "journal-test-bench-data")
+	if err != nil {
+		log.Fatal(err)
+	}
+	b.Logf("create directory: %v", dir)
+	// var err error
+	// dir := "/data/go/src/github.com/Laisky/go-utils/journal/benchmark/test"
+	defer os.RemoveAll(dir)
+
+	ctx := context.Background()
+	cfg := &JournalConfig{
+		BufDirPath:   dir,
+		BufSizeBytes: 314572800,
+	}
+	var ctxKey = utils.CtxKeyT{}
+	j := NewJournal(
+		context.WithValue(ctx, ctxKey, "journal"),
+		cfg)
+
+	data := &Data{
+		ID:   1000,
+		Data: map[string]interface{}{"data": utils.RandomStringWithLength(2048)},
+	}
+	b.Logf("write data: %+v", data)
+	b.Run("write", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			if err = j.WriteData(data); err != nil {
+				b.Fatalf("got error: %+v", err)
+			}
+		}
+	})
+
+	if err = j.Flush(); err != nil {
+		b.Fatalf("got error: %+v", err)
+	}
+	if err = j.Rotate(context.WithValue(ctx, ctxKey, "rotate")); err != nil {
+		b.Fatalf("got error: %+v", err)
+	}
+	b.Run("read", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			data.ID = 0
+			if err = j.LoadLegacyBuf(data); err == io.EOF {
+				return
+			} else if err != nil {
+				b.Fatalf("got error: %+v", err)
+			}
+
+			if data.ID != 1000 {
+				b.Fatal("read data error")
+			}
+		}
+	})
 }

@@ -1,4 +1,4 @@
-package journal_test
+package journal
 
 import (
 	"context"
@@ -12,11 +12,6 @@ import (
 	"time"
 
 	utils "github.com/Laisky/go-utils"
-	"github.com/Laisky/go-utils/journal"
-)
-
-var (
-	ctxKey = utils.CtxKeyT{}
 )
 
 func BenchmarkLock(b *testing.B) {
@@ -62,13 +57,15 @@ func TestJournal(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	cfg := &journal.JournalConfig{
+	cfg := &JournalConfig{
 		BufDirPath:     dir,
 		BufSizeBytes:   100,
 		CommittedIDTTL: 1 * time.Second,
 	}
-	j := journal.NewJournal(context.WithValue(ctx, ctxKey, "journal"), cfg)
-	data := &journal.Data{}
+
+	ctxKey := utils.CtxKeyT{}
+	j := NewJournal(context.WithValue(ctx, ctxKey, "journal"), cfg)
+	data := &Data{}
 	threshold := int64(50)
 
 	defer func() {
@@ -135,12 +132,13 @@ func BenchmarkJournal(b *testing.B) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	cfg := &journal.JournalConfig{
+	cfg := &JournalConfig{
 		BufDirPath:   dir,
 		BufSizeBytes: 100,
 	}
-	j := journal.NewJournal(context.WithValue(ctx, ctxKey, "journal"), cfg)
-	data := &journal.Data{
+	var ctxKey = utils.CtxKeyT{}
+	j := NewJournal(context.WithValue(ctx, ctxKey, "journal"), cfg)
+	data := &Data{
 		Data: map[string]interface{}{"data": "xxx"},
 		ID:   1,
 	}

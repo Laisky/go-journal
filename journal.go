@@ -7,16 +7,16 @@ import (
 	"sync"
 	"time"
 
-	"github.com/coreos/etcd/pkg/fileutil"
-
 	utils "github.com/Laisky/go-utils"
 	"github.com/Laisky/zap"
+	"github.com/coreos/etcd/pkg/fileutil"
 	"github.com/pkg/errors"
 )
 
 const (
 	// FlushInterval interval to flush serializer
 	// deafultFlushInterval = 5 * time.Second
+
 	// RotateCheckInterval interval to rotate journal files
 	RotateCheckInterval   = 1 * time.Second
 	defaultRotateDuration = 1 * time.Minute

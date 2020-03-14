@@ -14,10 +14,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/coreos/etcd/pkg/fileutil"
-
 	utils "github.com/Laisky/go-utils"
 	"github.com/Laisky/zap"
+	"github.com/coreos/etcd/pkg/fileutil"
 	"github.com/pkg/errors"
 )
 
