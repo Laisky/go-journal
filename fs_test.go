@@ -35,6 +35,11 @@ func TestGenerateNewBufFName(t *testing.T) {
 				NowTS:       "20060102-0700",
 			},
 			{
+				OldFName:    "20060102_00000009.buf",
+				ExpectFName: "20060102_00000010.buf",
+				NowTS:       "20060102-0700",
+			},
+			{
 				OldFName:    "20060102_00000001.ids",
 				ExpectFName: "20060102_00000002.ids",
 				NowTS:       "20060102-0700",
@@ -290,15 +295,20 @@ func BenchmarkData(b *testing.B) {
 	// dir := "/data/go/src/github.com/Laisky/go-utils/journal/benchmark/test"
 	defer os.RemoveAll(dir)
 
-	ctx := context.Background()
-	cfg := &JournalConfig{
-		BufDirPath:   dir,
-		BufSizeBytes: 314572800,
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	j, err := NewJournal(
+		WithBufDirPath(dir),
+		WithBufSizeByte(314572800),
+	)
+	if err != nil {
+		b.Fatalf("%+v", err)
 	}
-	var ctxKey = utils.CtxKeyT{}
-	j := NewJournal(
-		context.WithValue(ctx, ctxKey, "journal"),
-		cfg)
+
+	if err := j.Start(ctx); err != nil {
+		b.Fatalf("%+v", err)
+	}
 
 	data := &Data{
 		ID:   1000,
@@ -316,7 +326,7 @@ func BenchmarkData(b *testing.B) {
 	if err = j.Flush(); err != nil {
 		b.Fatalf("got error: %+v", err)
 	}
-	if err = j.Rotate(context.WithValue(ctx, ctxKey, "rotate")); err != nil {
+	if err = j.Rotate(ctx); err != nil {
 		b.Fatalf("got error: %+v", err)
 	}
 	b.Run("read", func(b *testing.B) {

@@ -57,14 +57,20 @@ func TestJournal(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	cfg := &JournalConfig{
-		BufDirPath:     dir,
-		BufSizeBytes:   100,
-		CommittedIDTTL: 1 * time.Second,
+
+	j, err := NewJournal(
+		WithBufDirPath(dir),
+		WithBufSizeByte(100),
+		WithCommitIDTTL(1*time.Second),
+	)
+	if err != nil {
+		t.Fatalf("%+v", err)
 	}
 
-	ctxKey := utils.CtxKeyT{}
-	j := NewJournal(context.WithValue(ctx, ctxKey, "journal"), cfg)
+	if err := j.Start(ctx); err != nil {
+		t.Fatalf("%+v", err)
+	}
+
 	data := &Data{}
 	threshold := int64(50)
 
@@ -90,10 +96,10 @@ func TestJournal(t *testing.T) {
 	}
 
 	// because journal will keep at least one journal, so need rotate twice
-	if err = j.Rotate(context.WithValue(ctx, ctxKey, "rotate")); err != nil {
+	if err = j.Rotate(ctx); err != nil {
 		t.Fatalf("got error: %+v", err)
 	}
-	if err = j.Rotate(context.WithValue(ctx, ctxKey, "rotate")); err != nil {
+	if err = j.Rotate(ctx); err != nil {
 		t.Fatalf("got error: %+v", err)
 	}
 
@@ -132,12 +138,19 @@ func BenchmarkJournal(b *testing.B) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	cfg := &JournalConfig{
-		BufDirPath:   dir,
-		BufSizeBytes: 100,
+
+	j, err := NewJournal(
+		WithBufDirPath(dir),
+		WithBufSizeByte(100),
+	)
+	if err != nil {
+		b.Fatalf("%+v", err)
 	}
-	var ctxKey = utils.CtxKeyT{}
-	j := NewJournal(context.WithValue(ctx, ctxKey, "journal"), cfg)
+
+	if err := j.Start(ctx); err != nil {
+		b.Fatalf("%+v", err)
+	}
+
 	data := &Data{
 		Data: map[string]interface{}{"data": "xxx"},
 		ID:   1,
@@ -155,7 +168,7 @@ func BenchmarkJournal(b *testing.B) {
 		}
 	})
 
-	if err = j.Rotate(context.WithValue(ctx, ctxKey, "rotate")); err != nil {
+	if err = j.Rotate(ctx); err != nil {
 		b.Fatalf("got error: %+v", err)
 	}
 
