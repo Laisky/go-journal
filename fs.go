@@ -27,8 +27,8 @@ var (
 	IDFileNameReg   = regexp.MustCompile(`^\d{8}_\d{8}\.ids(.gz)?$`)
 	fileGzSuffixReg = regexp.MustCompile(`\.gz$`)
 
-	defaultFileNameTimeLayout       = "20060102"
-	defaultFileNameTimeLayoutWithTZ = "20060102-0700"
+	defaultFileNameTimeLayout = "20060102"
+	// defaultFileNameTimeLayoutWithTZ = "20060102-0700"
 )
 
 func isFileGZ(fname string) bool {
@@ -162,6 +162,7 @@ func OpenBufFile(filepath string, fizeByte int64) (fp *os.File, err error) {
 	if fp, err = os.OpenFile(filepath, os.O_RDWR|os.O_CREATE, FileMode); err != nil {
 		return nil, errors.Wrapf(err, "open file got error: %+v", filepath)
 	}
+
 	if fizeByte != 0 {
 		if err = fileutil.Preallocate(fp, fizeByte, false); err != nil {
 			return nil, errors.Wrap(err, "try to preallocate fp got error")
@@ -179,6 +180,7 @@ func GenerateNewBufFName(now time.Time, oldFName string, isWithGZ bool) (string,
 	if len(finfo) < 2 {
 		return oldFName, fmt.Errorf("oldFname `%v` not correct", oldFName)
 	}
+
 	fts := finfo[0][:8]
 	fidx := finfo[0][9:]
 	fext := finfo[1]
@@ -186,12 +188,7 @@ func GenerateNewBufFName(now time.Time, oldFName string, isWithGZ bool) (string,
 		fext += ".gz"
 	}
 
-	ft, err := time.Parse(defaultFileNameTimeLayoutWithTZ, fts+"+0000")
-	if err != nil {
-		return oldFName, errors.Wrapf(err, "parse buf file name `%v` got error", oldFName)
-	}
-
-	if now.Sub(ft) > 24*time.Hour {
+	if now.Format(defaultFileNameTimeLayout) != fts {
 		return now.Format(defaultFileNameTimeLayout) + "_00000001." + fext, nil
 	}
 
@@ -199,5 +196,6 @@ func GenerateNewBufFName(now time.Time, oldFName string, isWithGZ bool) (string,
 	if err != nil {
 		return oldFName, errors.Wrapf(err, "parse buf file's idx `%v` got error", fidx)
 	}
+
 	return fmt.Sprintf("%v_%08d.%v", fts, idx+1, fext), nil
 }

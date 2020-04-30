@@ -35,6 +35,11 @@ func TestGenerateNewBufFName(t *testing.T) {
 				NowTS:       "20060102-0700",
 			},
 			{
+				OldFName:    "20060102_00000009.buf",
+				ExpectFName: "20060102_00000010.buf",
+				NowTS:       "20060102-0700",
+			},
+			{
 				OldFName:    "20060102_00000001.ids",
 				ExpectFName: "20060102_00000002.ids",
 				NowTS:       "20060102-0700",
