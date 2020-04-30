@@ -63,7 +63,7 @@ type bufFileStat struct {
 }
 
 // PrepareNewBufFile create new data & id files, and update bufFileStat.
-// if `isScan=true`, will scan exists buf files to find latest ids/data file.
+// if `isScan=true`, will scan exists buf files to find latest ids/data file, and update fsState.
 // if `isScan=false`, will use oldFsStat as latest ids/data file.
 func PrepareNewBufFile(dirPath string, oldFsStat *bufFileStat, isScan, isGz bool, sizeBytes int64) (fsStat *bufFileStat, err error) {
 	logger := utils.Logger.With(
@@ -73,11 +73,7 @@ func PrepareNewBufFile(dirPath string, oldFsStat *bufFileStat, isScan, isGz bool
 	)
 	logger.Debug("call PrepareNewBufFile")
 
-	fsStat = &bufFileStat{
-		OldDataFnames:    []string{},
-		OldIDsDataFnames: []string{},
-	}
-
+	fsStat = &bufFileStat{}
 	// scan directories
 	var (
 		latestDataFName, latestIDsFName string
@@ -121,9 +117,13 @@ func PrepareNewBufFile(dirPath string, oldFsStat *bufFileStat, isScan, isGz bool
 		}
 
 		logger.Debug("find latest journal files",
-			zap.Strings("fs", fsStat.OldDataFnames),
-			zap.Strings("fs", fsStat.OldIDsDataFnames))
+			zap.String("latest_data_file", latestDataFName),
+			zap.String("latest_ids_file", latestIDsFName),
+			zap.Strings("data_fs", fsStat.OldDataFnames),
+			zap.Strings("ids_fs", fsStat.OldIDsDataFnames))
 	} else {
+		fsStat.OldDataFnames = append(fsStat.OldDataFnames, fsStat.NewDataFp.Name())
+		fsStat.OldIDsDataFnames = append(fsStat.OldIDsDataFnames, fsStat.NewIDsFp.Name())
 		_, latestDataFName = filepath.Split(oldFsStat.NewDataFp.Name())
 		_, latestIDsFName = filepath.Split(oldFsStat.NewIDsFp.Name())
 	}

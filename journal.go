@@ -258,6 +258,7 @@ func (j *Journal) Rotate(ctx context.Context) (err error) {
 
 	j.lastRotateAt = utils.Clock.GetUTCNow()
 	// scan and create files
+	// acquired legacy lock means that there is no one reading legacy
 	if j.LockLegacy() {
 		j.logger.Debug("acquired legacy lock, create new file and refresh legacy loader",
 			zap.String("dir", j.bufDirPath))
