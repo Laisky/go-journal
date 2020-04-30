@@ -66,8 +66,8 @@ func (j *Journal) Start(ctx context.Context) (err error) {
 		return errors.Wrap(err, "init buf directory")
 	}
 
-	go j.runFlushTrigger(ctx)
-	go j.runRotateTrigger(ctx)
+	go j.startFlushTrigger(ctx)
+	go j.startRotateTrigger(ctx)
 	return
 }
 
@@ -130,8 +130,8 @@ func (j *Journal) flushAndClose() (err error) {
 	return err
 }
 
-func (j *Journal) runFlushTrigger(ctx context.Context) {
-	j.logger.Info("run flush trigger", zap.Duration("interval", j.flushInterval))
+func (j *Journal) startFlushTrigger(ctx context.Context) {
+	j.logger.Info("start flush trigger", zap.Duration("interval", j.flushInterval))
 	defer j.logger.Info("journal flush exit")
 
 	defer j.Flush()
@@ -154,8 +154,8 @@ func (j *Journal) runFlushTrigger(ctx context.Context) {
 	}
 }
 
-func (j *Journal) runRotateTrigger(ctx context.Context) {
-	j.logger.Info("run rotate trigger", zap.Duration("interval", j.rotateCheckInterval))
+func (j *Journal) startRotateTrigger(ctx context.Context) {
+	j.logger.Info("start rotate trigger", zap.Duration("interval", j.rotateCheckInterval))
 	defer j.logger.Info("journal rotate exit")
 
 	ticker := time.NewTicker(j.rotateCheckInterval)
@@ -187,7 +187,7 @@ func (j *Journal) WriteData(data *Data) (err error) {
 	j.RLock() // will blocked by flush & rotate
 	defer j.RUnlock()
 
-	if j.legacy.IsIDExists(data.ID) {
+	if j.legacy.CheckAndRemove(data.ID) {
 		return
 	}
 
@@ -232,13 +232,13 @@ func (j *Journal) isReadyToRotate() (ok bool) {
 // Rotate create new data and ids buf file.
 // this function is not threadsafe.
 func (j *Journal) Rotate(ctx context.Context) (err error) {
-	j.logger.Debug("try to starting to rotate")
+	j.logger.Debug("call Rotate")
 	// make sure no other rorate is running
 	if !j.rotateLock.TryLock() {
 		return nil
 	}
-	defer j.rotateLock.ForceRelease()
 
+	defer j.rotateLock.ForceRelease()
 	// stop legacy processing
 	j.Lock()
 	defer j.Unlock()
@@ -253,7 +253,7 @@ func (j *Journal) Rotate(ctx context.Context) (err error) {
 	}
 
 	if err = j.flushAndClose(); err != nil {
-		return errors.Wrap(err, "try to flush journal got error")
+		return errors.Wrap(err, "flush and close journal")
 	}
 
 	j.lastRotateAt = utils.Clock.GetUTCNow()
@@ -264,7 +264,7 @@ func (j *Journal) Rotate(ctx context.Context) (err error) {
 		// need to refresh legacy, so need scan=true
 		if j.fsStat, err = PrepareNewBufFile(j.bufDirPath, j.fsStat, true, j.isCompress, j.bufSizeBytes); err != nil {
 			j.UnLockLegacy()
-			return errors.Wrap(err, "try prepare new buf file")
+			return errors.Wrap(err, "prepare new buf file")
 		}
 
 		j.refreshLegacyLoader(ctx)
@@ -274,7 +274,7 @@ func (j *Journal) Rotate(ctx context.Context) (err error) {
 			zap.String("dir", j.bufDirPath))
 		// no need to scan old buf files
 		if j.fsStat, err = PrepareNewBufFile(j.bufDirPath, j.fsStat, false, j.isCompress, j.bufSizeBytes); err != nil {
-			return errors.Wrap(err, "try prepare new buf file")
+			return errors.Wrap(err, "prepare new buf file")
 		}
 	}
 
@@ -284,7 +284,7 @@ func (j *Journal) Rotate(ctx context.Context) (err error) {
 	}
 	j.dataFp = j.fsStat.NewDataFp
 	if j.dataEnc, err = NewDataEncoder(j.dataFp, j.isCompress); err != nil {
-		return errors.Wrap(err, "try to create new data encoder got error")
+		return errors.Wrapf(err, "create new data encoder `%s`", j.dataFp.Name())
 	}
 
 	// create & open ids file
@@ -293,7 +293,7 @@ func (j *Journal) Rotate(ctx context.Context) (err error) {
 	}
 	j.idsFp = j.fsStat.NewIDsFp
 	if j.idsEnc, err = NewIdsEncoder(j.idsFp, j.isCompress); err != nil {
-		return errors.Wrap(err, "try to create new ids encoder got error")
+		return errors.Wrapf(err, "create new ids encoder `%s`", j.idsFp.Name())
 	}
 
 	return nil
@@ -301,32 +301,36 @@ func (j *Journal) Rotate(ctx context.Context) (err error) {
 
 // refreshLegacyLoader create or reset legacy loader
 func (j *Journal) refreshLegacyLoader(ctx context.Context) {
-	j.logger.Debug("refreshLegacyLoader")
+	j.logger.Debug("call refreshLegacyLoader")
 	if j.legacy == nil {
-		j.legacy = NewLegacyLoader(ctx, j.fsStat.OldDataFnames, j.fsStat.OldIdsDataFname, j.isCompress, j.committedIDTTL)
+		j.logger.Debug("create new LegacyLoader",
+			zap.Strings("data_files", j.fsStat.OldDataFnames),
+			zap.Strings("ids_files", j.fsStat.OldIDsDataFnames),
+		)
+		j.legacy = NewLegacyLoader(ctx, j.fsStat.OldDataFnames, j.fsStat.OldIDsDataFnames, j.isCompress, j.committedIDTTL)
 	} else {
-		j.legacy.Reset(j.fsStat.OldDataFnames, j.fsStat.OldIdsDataFname)
+		j.legacy.Reset(j.fsStat.OldDataFnames, j.fsStat.OldIDsDataFnames)
 		if j.isAggresiveGC {
 			utils.TriggerGC()
 		}
 	}
 }
 
-// LockLegacy lock legacy to prevent rotate
+// LockLegacy lock legacy to prevent rotate, clean
 func (j *Journal) LockLegacy() bool {
-	j.logger.Debug("try to lock legacy")
+	j.logger.Debug("call LockLegacy")
 	return j.legacyLock.TryLock()
 }
 
 // IsLegacyRunning check whether running legacy loading
 func (j *Journal) IsLegacyRunning() bool {
-	j.logger.Debug("IsLegacyRunning")
+	j.logger.Debug("call IsLegacyRunning")
 	return j.legacyLock.IsLocked()
 }
 
 // UnLockLegacy release legacy lock
 func (j *Journal) UnLockLegacy() bool {
-	j.logger.Debug("try to unlock legacy")
+	j.logger.Debug("call UnLockLegacy")
 	return j.legacyLock.TryRelease()
 }
 
@@ -343,6 +347,7 @@ func (j *Journal) LoadLegacyBuf(data *Data) (err error) {
 	if !j.IsLegacyRunning() {
 		j.logger.Panic("should call `j.LockLegacy()` first")
 	}
+
 	j.RLock()
 	defer j.RUnlock()
 
@@ -352,15 +357,16 @@ func (j *Journal) LoadLegacyBuf(data *Data) (err error) {
 	}
 
 	if err = j.legacy.Load(data); err == io.EOF {
-		j.logger.Debug("LoadLegacyBuf done")
+		j.logger.Debug("load all legacy data")
 		if err = j.legacy.Clean(); err != nil {
-			j.logger.Error("clean buf files got error", zap.Error(err))
+			j.logger.Error("clean legacy", zap.Error(err))
 		}
+
 		j.UnLockLegacy()
 		return io.EOF
 	} else if err != nil {
 		j.UnLockLegacy()
-		return errors.Wrap(err, "load legacy journal got error")
+		return errors.Wrap(err, "load legacy data")
 	}
 
 	return nil

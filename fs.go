@@ -58,8 +58,8 @@ func PrepareDir(path string) error {
 
 // bufFileStat current journal files' stats
 type bufFileStat struct {
-	NewDataFp, NewIDsFp            *os.File
-	OldDataFnames, OldIdsDataFname []string
+	NewDataFp, NewIDsFp             *os.File
+	OldDataFnames, OldIDsDataFnames []string
 }
 
 // PrepareNewBufFile create new data & id files, and update bufFileStat.
@@ -74,8 +74,8 @@ func PrepareNewBufFile(dirPath string, oldFsStat *bufFileStat, isScan, isGz bool
 	logger.Debug("call PrepareNewBufFile")
 
 	fsStat = &bufFileStat{
-		OldDataFnames:   []string{},
-		OldIdsDataFname: []string{},
+		OldDataFnames:    []string{},
+		OldIDsDataFnames: []string{},
 	}
 
 	// scan directories
@@ -110,7 +110,7 @@ func PrepareNewBufFile(dirPath string, oldFsStat *bufFileStat, isScan, isGz bool
 
 			} else if idsFileNameReg.MatchString(fname) {
 				logger.Debug("find ids file", zap.String("file", fname))
-				fsStat.OldIdsDataFname = append(fsStat.OldIdsDataFname, absFname)
+				fsStat.OldIDsDataFnames = append(fsStat.OldIDsDataFnames, absFname)
 				if fname > latestIDsFName {
 					latestIDsFName = fname
 				}
@@ -122,7 +122,7 @@ func PrepareNewBufFile(dirPath string, oldFsStat *bufFileStat, isScan, isGz bool
 
 		logger.Debug("find latest journal files",
 			zap.Strings("fs", fsStat.OldDataFnames),
-			zap.Strings("fs", fsStat.OldIdsDataFname))
+			zap.Strings("fs", fsStat.OldIDsDataFnames))
 	} else {
 		_, latestDataFName = filepath.Split(oldFsStat.NewDataFp.Name())
 		_, latestIDsFName = filepath.Split(oldFsStat.NewIDsFp.Name())
