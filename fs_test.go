@@ -306,7 +306,9 @@ func BenchmarkData(b *testing.B) {
 		b.Fatalf("%+v", err)
 	}
 
-	j.Start(ctx)
+	if err := j.Start(ctx); err != nil {
+		b.Fatalf("%+v", err)
+	}
 
 	data := &Data{
 		ID:   1000,

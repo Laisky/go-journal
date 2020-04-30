@@ -15,18 +15,21 @@ import (
 
 // Journal redo log consist by msgs and committed ids
 type Journal struct {
-	sync.RWMutex // journal rwlock
+	// RWMutex journal rwlock.
+	// acquire write lock when flush/rotate journal legacy.
+	// acquire read lock when read/write journal legacy.
+	sync.RWMutex
 	*option
 
 	logger                 *utils.LoggerType
 	stopChan               chan struct{}
 	rotateLock, legacyLock *utils.Mutex
 	dataFp, idsFp          *os.File // current writting journal file
-	fsStat                 *BufFileStat
+	fsStat                 *bufFileStat
 	legacy                 *LegacyLoader
 	dataEnc                *DataEncoder
 	idsEnc                 *IdsEncoder
-	latestRotateT          time.Time
+	lastRotateAt           time.Time
 }
 
 // NewJournal create new Journal
@@ -55,17 +58,22 @@ func NewJournal(opts ...OptionFunc) (j *Journal, err error) {
 		zap.Duration("rotateCheckInterval", j.rotateCheckInterval),
 		zap.Duration("committedIDTTL", j.committedIDTTL),
 	)
-	return
+	return j, nil
 }
 
-func (j *Journal) Start(ctx context.Context) {
-	j.initBufDir(ctx)
+func (j *Journal) Start(ctx context.Context) (err error) {
+	if err = j.initBufDir(ctx); err != nil {
+		return errors.Wrap(err, "init buf directory")
+	}
+
 	go j.runFlushTrigger(ctx)
 	go j.runRotateTrigger(ctx)
+	return
 }
 
 func (j *Journal) Close() {
 	j.logger.Info("close Journal")
+
 	j.Lock()
 	j.Flush()
 	j.stopChan <- struct{}{}
@@ -73,50 +81,49 @@ func (j *Journal) Close() {
 }
 
 // initBufDir initialize buf directory and create buf files
-func (j *Journal) initBufDir(ctx context.Context) {
-	var err error
-	if err = fileutil.TouchDirAll(j.bufDirPath); err != nil {
-		j.logger.Panic("try to prepare dir got error",
-			zap.String("dir_path", j.bufDirPath),
-			zap.Error(err))
+func (j *Journal) initBufDir(ctx context.Context) (err error) {
+	if err = fileutil.IsDirWriteable(j.bufDirPath); err != nil {
+		return errors.Wrapf(err, "cannot write to `%s`", j.bufDirPath)
 	}
 
 	if err = j.Rotate(ctx); err != nil { // manually first run
-		j.logger.Panic("try to call rotate got error", zap.Error(err))
+		return errors.Wrapf(err, "init rotate in `%s`", j.bufDirPath)
 	}
+
+	return
 }
 
-// Flush flush journal files
+// Flush flush journal files buffer to file
 func (j *Journal) Flush() (err error) {
 	if j.idsEnc != nil {
 		// j.logger.Debug("flush ids")
 		if err = j.idsEnc.Flush(); err != nil {
-			err = errors.Wrap(err, "try to flush ids got error")
+			err = errors.Wrap(err, "flush ids encoder")
 		}
 	}
 
 	if j.dataEnc != nil {
 		// j.logger.Debug("flush data")
 		if dataErr := j.dataEnc.Flush(); dataErr != nil {
-			err = errors.Wrap(err, "try to flush data got error")
+			err = errors.Wrap(err, "flush data encoder")
 		}
 	}
 
 	return err
 }
 
-// flushAndClose flush journal files
+// flushAndClose flush journal files then close
 func (j *Journal) flushAndClose() (err error) {
 	j.logger.Debug("flushAndClose")
 	if j.idsEnc != nil {
 		if err = j.idsEnc.Close(); err != nil {
-			err = errors.Wrap(err, "try to close ids got error")
+			err = errors.Wrap(err, "flush ids encoder")
 		}
 	}
 
 	if j.dataEnc != nil {
 		if dataErr := j.dataEnc.Close(); dataErr != nil {
-			err = errors.Wrap(err, "try to close data got error")
+			err = errors.Wrap(err, "flush data encoder")
 		}
 	}
 
@@ -124,30 +131,31 @@ func (j *Journal) flushAndClose() (err error) {
 }
 
 func (j *Journal) runFlushTrigger(ctx context.Context) {
-	defer j.Flush()
+	j.logger.Info("run flush trigger", zap.Duration("interval", j.flushInterval))
 	defer j.logger.Info("journal flush exit")
 
+	defer j.Flush()
 	var err error
+	ticker := time.NewTicker(j.flushInterval)
+	defer ticker.Stop()
 	for {
-		j.Lock()
 		select {
 		case <-j.stopChan:
 			return
 		case <-ctx.Done():
 			return
-		default:
+		case <-ticker.C:
+			j.Lock()
+			if err = j.Flush(); err != nil {
+				j.logger.Error("flush journal", zap.Error(err))
+			}
+			j.Unlock()
 		}
-
-		if err = j.Flush(); err != nil {
-			j.logger.Error("try to flush ids&data got error", zap.Error(err))
-		}
-		j.Unlock()
-		time.Sleep(j.flushInterval)
 	}
 }
 
 func (j *Journal) runRotateTrigger(ctx context.Context) {
-	defer j.Flush()
+	j.logger.Info("run rotate trigger", zap.Duration("interval", j.rotateCheckInterval))
 	defer j.logger.Info("journal rotate exit")
 
 	ticker := time.NewTicker(j.rotateCheckInterval)
@@ -196,6 +204,8 @@ func (j *Journal) WriteId(id int64) error {
 	return j.idsEnc.Write(id)
 }
 
+// isReadyToRotate check whether is ready to start rotate.
+// file size bigger `bufSizeBytes` or existing time logger than `rotateDuration`
 func (j *Journal) isReadyToRotate() (ok bool) {
 	j.RLock()
 	defer j.RUnlock()
@@ -208,20 +218,19 @@ func (j *Journal) isReadyToRotate() (ok bool) {
 		j.logger.Error("try to get file stat got error", zap.Error(err))
 		ok = false
 	} else if fi.Size() > j.bufSizeBytes ||
-		utils.Clock.GetUTCNow().Sub(j.latestRotateT) > j.rotateDuration {
+		utils.Clock.GetUTCNow().Sub(j.lastRotateAt) > j.rotateDuration {
 		ok = true
 	}
 
 	j.logger.Debug("check isReadyToRotate",
 		zap.Bool("ready", ok),
-		zap.String("file", j.dataFp.Name()),
+		zap.String("old_file", j.dataFp.Name()),
 	)
 	return
 }
 
-/*Rotate create new data and ids buf file
-this function is not threadsafe.
-*/
+// Rotate create new data and ids buf file.
+// this function is not threadsafe.
 func (j *Journal) Rotate(ctx context.Context) (err error) {
 	j.logger.Debug("try to starting to rotate")
 	// make sure no other rorate is running
@@ -247,7 +256,7 @@ func (j *Journal) Rotate(ctx context.Context) (err error) {
 		return errors.Wrap(err, "try to flush journal got error")
 	}
 
-	j.latestRotateT = utils.Clock.GetUTCNow()
+	j.lastRotateAt = utils.Clock.GetUTCNow()
 	// scan and create files
 	if j.LockLegacy() {
 		j.logger.Debug("acquired legacy lock, create new file and refresh legacy loader",
@@ -255,8 +264,9 @@ func (j *Journal) Rotate(ctx context.Context) (err error) {
 		// need to refresh legacy, so need scan=true
 		if j.fsStat, err = PrepareNewBufFile(j.bufDirPath, j.fsStat, true, j.isCompress, j.bufSizeBytes); err != nil {
 			j.UnLockLegacy()
-			return errors.Wrap(err, "call PrepareNewBufFile got error")
+			return errors.Wrap(err, "try prepare new buf file")
 		}
+
 		j.refreshLegacyLoader(ctx)
 		j.UnLockLegacy()
 	} else {
@@ -264,7 +274,7 @@ func (j *Journal) Rotate(ctx context.Context) (err error) {
 			zap.String("dir", j.bufDirPath))
 		// no need to scan old buf files
 		if j.fsStat, err = PrepareNewBufFile(j.bufDirPath, j.fsStat, false, j.isCompress, j.bufSizeBytes); err != nil {
-			return errors.Wrap(err, "call PrepareNewBufFile got error")
+			return errors.Wrap(err, "try prepare new buf file")
 		}
 	}
 

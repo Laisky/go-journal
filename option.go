@@ -100,6 +100,10 @@ func WithFlushInterval(d time.Duration) OptionFunc {
 
 func WithBufDirPath(path string) OptionFunc {
 	return func(o *option) (err error) {
+		if err = fileutil.TouchDirAll(path); err != nil {
+			return errors.Wrapf(err, "mkdir `%s`", path)
+		}
+
 		if err = fileutil.IsDirWriteable(path); err != nil {
 			return errors.Wrapf(err, "check is writable for `%s`", path)
 		}

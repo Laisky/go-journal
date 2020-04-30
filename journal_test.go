@@ -67,7 +67,9 @@ func TestJournal(t *testing.T) {
 		t.Fatalf("%+v", err)
 	}
 
-	j.Start(ctx)
+	if err := j.Start(ctx); err != nil {
+		t.Fatalf("%+v", err)
+	}
 
 	data := &Data{}
 	threshold := int64(50)
@@ -145,7 +147,9 @@ func BenchmarkJournal(b *testing.B) {
 		b.Fatalf("%+v", err)
 	}
 
-	j.Start(ctx)
+	if err := j.Start(ctx); err != nil {
+		b.Fatalf("%+v", err)
+	}
 
 	data := &Data{
 		Data: map[string]interface{}{"data": "xxx"},
