@@ -147,8 +147,8 @@ READ_NEW_LINE:
 			utils.Logger.Error("close file", zap.String("file", l.dataFp.Name()), zap.Error(err))
 		}
 
-		l.dataFp = nil
 		utils.Logger.Debug("finish read data file", zap.String("fname", l.dataFp.Name()))
+		l.dataFp = nil
 		goto READ_NEW_FILE
 	}
 
