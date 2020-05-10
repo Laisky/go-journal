@@ -3,7 +3,6 @@ package journal
 import (
 	"time"
 
-	utils "github.com/Laisky/go-utils"
 	"github.com/Laisky/zap"
 	"github.com/coreos/etcd/pkg/fileutil"
 	"github.com/pkg/errors"
@@ -56,8 +55,12 @@ type OptionFunc func(*option) error
 
 func WithRotateDuration(d time.Duration) OptionFunc {
 	return func(o *option) error {
+		if d == 0 {
+			logger.Info("rewrite to default config", zap.Duration("rotateDuration", d))
+			return nil
+		}
 		if d < o.rotateDuration {
-			utils.Logger.Warn("rotateDuration may too short")
+			logger.Warn("rotateDuration may too short")
 		}
 
 		o.rotateDuration = d
@@ -67,8 +70,12 @@ func WithRotateDuration(d time.Duration) OptionFunc {
 
 func WithRotateCheckInterval(d time.Duration) OptionFunc {
 	return func(o *option) error {
+		if d == 0 {
+			logger.Info("rewrite to default config", zap.Duration("rotateCheckInterval", d))
+			return nil
+		}
 		if d < o.rotateCheckInterval {
-			utils.Logger.Warn("rotateCheckInterval may too short")
+			logger.Warn("rotateCheckInterval may too short")
 		}
 
 		o.rotateCheckInterval = d
@@ -78,8 +85,12 @@ func WithRotateCheckInterval(d time.Duration) OptionFunc {
 
 func WithCommitIDTTL(d time.Duration) OptionFunc {
 	return func(o *option) error {
+		if d == 0 {
+			logger.Info("rewrite to default config", zap.Duration("committedIDTTL", d))
+			return nil
+		}
 		if d < o.committedIDTTL {
-			utils.Logger.Warn("committedIDTTL may too short")
+			logger.Warn("committedIDTTL may too short")
 		}
 
 		o.committedIDTTL = d
@@ -89,8 +100,12 @@ func WithCommitIDTTL(d time.Duration) OptionFunc {
 
 func WithFlushInterval(d time.Duration) OptionFunc {
 	return func(o *option) error {
+		if d == 0 {
+			logger.Info("rewrite to default config", zap.Duration("flushInterval", d))
+			return nil
+		}
 		if d < o.flushInterval {
-			utils.Logger.Warn("flushInterval may too short")
+			logger.Warn("flushInterval may too short")
 		}
 
 		o.flushInterval = d
@@ -100,6 +115,10 @@ func WithFlushInterval(d time.Duration) OptionFunc {
 
 func WithBufDirPath(path string) OptionFunc {
 	return func(o *option) (err error) {
+		if path == "" {
+			logger.Info("rewrite to default config", zap.String("bufDirPath", path))
+			return nil
+		}
 		if err = fileutil.TouchDirAll(path); err != nil {
 			return errors.Wrapf(err, "mkdir `%s`", path)
 		}
@@ -115,6 +134,11 @@ func WithBufDirPath(path string) OptionFunc {
 
 func WithName(name string) OptionFunc {
 	return func(o *option) (err error) {
+		if name == "" {
+			logger.Info("rewrite to default config", zap.String("name", name))
+			return nil
+		}
+
 		o.name = name
 		return nil
 	}
@@ -122,8 +146,13 @@ func WithName(name string) OptionFunc {
 
 func WithBufSizeByte(bufSize int64) OptionFunc {
 	return func(o *option) (err error) {
+		if bufSize == 0 {
+			logger.Info("rewrite to default config", zap.Int64("bufSizeBytes", defaultBufSizeBytes))
+			return nil
+		}
+
 		if bufSize < 50*1024*1024 {
-			utils.Logger.Warn("buf size bytes too small", zap.Int64("bytes", bufSize))
+			logger.Warn("buf size bytes too small", zap.Int64("bytes", bufSize))
 		}
 
 		o.bufSizeBytes = bufSize

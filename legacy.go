@@ -35,7 +35,7 @@ func NewLegacyLoader(ctx context.Context,
 	isCompress bool,
 	committedIDTTL time.Duration,
 ) *LegacyLoader {
-	utils.Logger.Debug("new legacy loader", zap.Strings("dataFiles", dataFNames), zap.Strings("idsFiles", idsFNames))
+	logger.Debug("new legacy loader", zap.Strings("dataFiles", dataFNames), zap.Strings("idsFiles", idsFNames))
 	return &LegacyLoader{
 		dataFNames:    dataFNames,
 		idsFNames:     idsFNames,
@@ -60,7 +60,7 @@ func (l *LegacyLoader) Reset(dataFNames, idsFNames []string) {
 	l.Lock()
 	defer l.Unlock()
 
-	utils.Logger.Debug("reset legacy loader",
+	logger.Debug("reset legacy loader",
 		zap.Strings("data_files", dataFNames),
 		zap.Strings("ids_files", idsFNames))
 	l.dataFNames = dataFNames
@@ -77,13 +77,13 @@ func (l *LegacyLoader) GetIdsLen() int {
 func (l *LegacyLoader) removeFiles(fs []string) {
 	for _, fpath := range fs {
 		if err := os.Remove(fpath); err != nil {
-			utils.Logger.Error("delete file",
+			logger.Error("delete file",
 				zap.String("file", fpath),
 				zap.Error(err))
 			continue
 		}
 
-		utils.Logger.Info("remove file", zap.String("file", fpath))
+		logger.Info("remove file", zap.String("file", fpath))
 	}
 }
 
@@ -100,7 +100,7 @@ func (l *LegacyLoader) Load(data *Data) (err error) {
 
 		l.isReadyReload = false
 		if err = l.LoadAllids(l.ids); err != nil {
-			utils.Logger.Error("load all ids", zap.Error(err))
+			logger.Error("load all ids", zap.Error(err))
 		}
 
 		l.dataFilesLen = len(l.dataFNames) - 1
@@ -113,23 +113,23 @@ READ_NEW_FILE:
 		l.dataFileIdx++
 		// all data files finished
 		if l.dataFileIdx == l.dataFilesLen {
-			utils.Logger.Debug("all data files finished")
+			logger.Debug("all data files finished")
 			l.isNeedReload = true
 			return io.EOF
 		}
 
-		utils.Logger.Debug("read new data file",
+		logger.Debug("read new data file",
 			zap.Strings("data_files", l.dataFNames),
 			zap.String("fname", l.dataFNames[l.dataFileIdx]))
 		l.dataFp, err = os.Open(l.dataFNames[l.dataFileIdx])
 		if err != nil {
-			utils.Logger.Error("open data file", zap.Error(err))
+			logger.Error("open data file", zap.Error(err))
 			l.dataFp = nil
 			goto READ_NEW_FILE
 		}
 
 		if l.decoder, err = NewDataDecoder(l.dataFp, isFileGZ(l.dataFp.Name())); err != nil {
-			utils.Logger.Error("decode data file", zap.Error(err))
+			logger.Error("decode data file", zap.Error(err))
 			l.dataFp = nil
 			goto READ_NEW_FILE
 		}
@@ -139,31 +139,31 @@ READ_NEW_LINE:
 	if err = l.decoder.Read(data); err != nil {
 		if err != io.EOF {
 			// current file is broken
-			utils.Logger.Error("load data file", zap.Error(err))
+			logger.Error("load data file", zap.Error(err))
 		}
 
 		// read new file
 		if err = l.dataFp.Close(); err != nil {
-			utils.Logger.Error("close file", zap.String("file", l.dataFp.Name()), zap.Error(err))
+			logger.Error("close file", zap.String("file", l.dataFp.Name()), zap.Error(err))
 		}
 
-		utils.Logger.Debug("finish read data file", zap.String("fname", l.dataFp.Name()))
+		logger.Debug("finish read data file", zap.String("fname", l.dataFp.Name()))
 		l.dataFp = nil
 		goto READ_NEW_FILE
 	}
 
 	if l.ids.CheckAndRemove(data.ID) { // ignore committed data
-		// utils.Logger.Debug("data already consumed", zap.Int64("id", id))
+		// logger.Debug("data already consumed", zap.Int64("id", id))
 		goto READ_NEW_LINE
 	}
 
-	// utils.Logger.Debug("load unconsumed data", zap.Int64("id", id))
+	// logger.Debug("load unconsumed data", zap.Int64("id", id))
 	return nil
 }
 
 // LoadMaxId load max id from all ids files
 func (l *LegacyLoader) LoadMaxId() (maxId int64, err error) {
-	utils.Logger.Debug("LoadMaxId...")
+	logger.Debug("LoadMaxId...")
 	var (
 		fp         *os.File
 		id         int64
@@ -171,14 +171,14 @@ func (l *LegacyLoader) LoadMaxId() (maxId int64, err error) {
 	)
 	startTs := utils.Clock.GetUTCNow()
 	for _, fname := range l.idsFNames {
-		// utils.Logger.Debug("load ids from file", zap.String("fname", fname))
+		// logger.Debug("load ids from file", zap.String("fname", fname))
 		if fp, err = os.Open(fname); err != nil {
 			return 0, errors.Wrapf(err, "open file `%s` to load maxid", fname)
 		}
 		defer fp.Close()
 
 		if idsDecoder, err = NewIdsDecoder(fp, isFileGZ(fp.Name())); err != nil {
-			utils.Logger.Error("new ids decoder from file",
+			logger.Error("new ids decoder from file",
 				zap.Error(err),
 				zap.String("fname", fp.Name()),
 			)
@@ -186,7 +186,7 @@ func (l *LegacyLoader) LoadMaxId() (maxId int64, err error) {
 		}
 
 		if id, err = idsDecoder.LoadMaxId(); err != nil {
-			utils.Logger.Error("read ids decoder",
+			logger.Error("read ids decoder",
 				zap.Error(err),
 				zap.String("fname", fp.Name()),
 			)
@@ -198,7 +198,7 @@ func (l *LegacyLoader) LoadMaxId() (maxId int64, err error) {
 		}
 	}
 
-	utils.Logger.Debug("load max id done",
+	logger.Debug("load max id done",
 		zap.Int64("max_id", maxId),
 		zap.Float64("sec", utils.Clock.GetUTCNow().Sub(startTs).Seconds()))
 	return id, nil
@@ -206,7 +206,7 @@ func (l *LegacyLoader) LoadMaxId() (maxId int64, err error) {
 
 // LoadAllids read all ids from ids file into ids set
 func (l *LegacyLoader) LoadAllids(ids Int64SetItf) (err error) {
-	utils.Logger.Debug("call LoadAllids")
+	logger.Debug("call LoadAllids")
 	var (
 		errMsg     string
 		fp         *os.File
@@ -215,10 +215,10 @@ func (l *LegacyLoader) LoadAllids(ids Int64SetItf) (err error) {
 
 	startTs := utils.Clock.GetUTCNow()
 	for _, fname := range l.idsFNames {
-		// utils.Logger.Debug("load ids from file", zap.String("fname", fname))
+		// logger.Debug("load ids from file", zap.String("fname", fname))
 		if fp != nil {
 			if err = fp.Close(); err != nil {
-				utils.Logger.Error("close file", zap.String("file", fp.Name()), zap.Error(err))
+				logger.Error("close file", zap.String("file", fp.Name()), zap.Error(err))
 			}
 		}
 
@@ -241,11 +241,11 @@ func (l *LegacyLoader) LoadAllids(ids Int64SetItf) (err error) {
 
 	if fp != nil {
 		if err = fp.Close(); err != nil {
-			utils.Logger.Error("close file", zap.String("file", fp.Name()), zap.Error(err))
+			logger.Error("close file", zap.String("file", fp.Name()), zap.Error(err))
 		}
 	}
 
-	utils.Logger.Debug("load all ids done",
+	logger.Debug("load all ids done",
 		zap.Float64("sec", utils.Clock.GetUTCNow().Sub(startTs).Seconds()))
 	if errMsg != "" {
 		return fmt.Errorf("load all ids: " + errMsg)
@@ -271,6 +271,6 @@ func (l *LegacyLoader) Clean() error {
 
 	l.dataFp.Close()
 	l.dataFp = nil // `Load` need this
-	utils.Logger.Debug("clean all legacy files")
+	logger.Debug("clean all legacy files")
 	return nil
 }

@@ -13,6 +13,8 @@ import (
 	"github.com/pkg/errors"
 )
 
+var logger = utils.Logger.Named("go-journal")
+
 // Journal redo log consist by msgs and committed ids
 type Journal struct {
 	// RWMutex journal rwlock.

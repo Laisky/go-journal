@@ -43,7 +43,7 @@ func PrepareDir(path string) error {
 			return errors.Wrapf(err, "create directory `%s` with mod `%d`", path, DirMode)
 		}
 
-		utils.Logger.Info("create new directory", zap.String("path", path))
+		logger.Info("create new directory", zap.String("path", path))
 		return nil
 	} else if err != nil {
 		return errors.Wrapf(err, "get stat of path `%s`", path)
@@ -169,7 +169,7 @@ func PrepareNewBufFile(dirPath string, oldFsStat *bufFileStat, isScan, isGz bool
 
 // OpenBufFile create and open file
 func OpenBufFile(filepath string, preallocateBytes int64) (fp *os.File, err error) {
-	utils.Logger.Debug("create file with preallocate",
+	logger.Debug("create file with preallocate",
 		zap.Int64("preallocate", preallocateBytes),
 		zap.String("file", filepath))
 	if fp, err = os.OpenFile(filepath, os.O_RDWR|os.O_CREATE, FileMode); err != nil {
@@ -188,7 +188,7 @@ func OpenBufFile(filepath string, preallocateBytes int64) (fp *os.File, err erro
 // GenerateNewBufFName return new buf file name depends on current time
 // file name looks like `yyyymmddnnnn.ids`, nnnn begin from 0001 for each day
 func GenerateNewBufFName(now time.Time, oldFName string, isGz bool) (string, error) {
-	utils.Logger.Debug("GenerateNewBufFName", zap.Time("now", now), zap.String("oldFName", oldFName))
+	logger.Debug("GenerateNewBufFName", zap.Time("now", now), zap.String("oldFName", oldFName))
 	finfo := strings.SplitN(oldFName, ".", 2) // {name, ext}
 	if len(finfo) < 2 {
 		return oldFName, fmt.Errorf("oldFname `%s` not correct", oldFName)
