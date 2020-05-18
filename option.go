@@ -24,6 +24,7 @@ const (
 
 // option configuration of Journal
 type option struct {
+	logger       *utils.LoggerType
 	bufDirPath   string
 	bufSizeBytes int64
 	// isAggresiveGC force gc when reset legacy loader
@@ -41,6 +42,7 @@ type option struct {
 
 func newOption() *option {
 	return &option{
+		logger:              Logger,
 		bufDirPath:          defaultBufDir,
 		rotateDuration:      defaultRotateDuration,
 		bufSizeBytes:        defaultBufSizeBytes,
@@ -61,7 +63,7 @@ func WithLogger(logger *utils.LoggerType) OptionFunc {
 			return fmt.Errorf("logger cannot be nil")
 		}
 
-		Logger = logger
+		o.logger = logger
 		return nil
 	}
 }
