@@ -113,8 +113,8 @@ const (
 
 func BenchmarkFSPreallocate(b *testing.B) {
 	var err error
-	// logger.ChangeLevel("error")
-	if err = logger.ChangeLevel("error"); err != nil {
+	// Logger.ChangeLevel("error")
+	if err = Logger.ChangeLevel("error"); err != nil {
 		b.Fatalf("set level: %+v", err)
 	}
 	// create data files

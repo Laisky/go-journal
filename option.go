@@ -55,13 +55,13 @@ func newOption() *option {
 
 type OptionFunc func(*option) error
 
-func WithLogger(l *utils.LoggerType) OptionFunc {
+func WithLogger(logger *utils.LoggerType) OptionFunc {
 	return func(o *option) error {
-		if l == nil {
+		if logger == nil {
 			return fmt.Errorf("logger cannot be nil")
 		}
 
-		logger = l
+		Logger = logger
 		return nil
 	}
 }
@@ -69,11 +69,11 @@ func WithLogger(l *utils.LoggerType) OptionFunc {
 func WithRotateDuration(d time.Duration) OptionFunc {
 	return func(o *option) error {
 		if d == 0 {
-			logger.Info("rewrite to default config", zap.Duration("rotateDuration", d))
+			Logger.Info("rewrite to default config", zap.Duration("rotateDuration", d))
 			return nil
 		}
 		if d < o.rotateDuration {
-			logger.Warn("rotateDuration may too short")
+			Logger.Warn("rotateDuration may too short")
 		}
 
 		o.rotateDuration = d
@@ -84,11 +84,11 @@ func WithRotateDuration(d time.Duration) OptionFunc {
 func WithRotateCheckInterval(d time.Duration) OptionFunc {
 	return func(o *option) error {
 		if d == 0 {
-			logger.Info("rewrite to default config", zap.Duration("rotateCheckInterval", d))
+			Logger.Info("rewrite to default config", zap.Duration("rotateCheckInterval", d))
 			return nil
 		}
 		if d < o.rotateCheckInterval {
-			logger.Warn("rotateCheckInterval may too short")
+			Logger.Warn("rotateCheckInterval may too short")
 		}
 
 		o.rotateCheckInterval = d
@@ -99,11 +99,11 @@ func WithRotateCheckInterval(d time.Duration) OptionFunc {
 func WithCommitIDTTL(d time.Duration) OptionFunc {
 	return func(o *option) error {
 		if d == 0 {
-			logger.Info("rewrite to default config", zap.Duration("committedIDTTL", d))
+			Logger.Info("rewrite to default config", zap.Duration("committedIDTTL", d))
 			return nil
 		}
 		if d < o.committedIDTTL {
-			logger.Warn("committedIDTTL may too short")
+			Logger.Warn("committedIDTTL may too short")
 		}
 
 		o.committedIDTTL = d
@@ -114,11 +114,11 @@ func WithCommitIDTTL(d time.Duration) OptionFunc {
 func WithFlushInterval(d time.Duration) OptionFunc {
 	return func(o *option) error {
 		if d == 0 {
-			logger.Info("rewrite to default config", zap.Duration("flushInterval", d))
+			Logger.Info("rewrite to default config", zap.Duration("flushInterval", d))
 			return nil
 		}
 		if d < o.flushInterval {
-			logger.Warn("flushInterval may too short")
+			Logger.Warn("flushInterval may too short")
 		}
 
 		o.flushInterval = d
@@ -129,7 +129,7 @@ func WithFlushInterval(d time.Duration) OptionFunc {
 func WithBufDirPath(path string) OptionFunc {
 	return func(o *option) (err error) {
 		if path == "" {
-			logger.Info("rewrite to default config", zap.String("bufDirPath", path))
+			Logger.Info("rewrite to default config", zap.String("bufDirPath", path))
 			return nil
 		}
 		if err = fileutil.TouchDirAll(path); err != nil {
@@ -148,7 +148,7 @@ func WithBufDirPath(path string) OptionFunc {
 func WithName(name string) OptionFunc {
 	return func(o *option) (err error) {
 		if name == "" {
-			logger.Info("rewrite to default config", zap.String("name", name))
+			Logger.Info("rewrite to default config", zap.String("name", name))
 			return nil
 		}
 
@@ -160,12 +160,12 @@ func WithName(name string) OptionFunc {
 func WithBufSizeByte(bufSize int64) OptionFunc {
 	return func(o *option) (err error) {
 		if bufSize == 0 {
-			logger.Info("rewrite to default config", zap.Int64("bufSizeBytes", defaultBufSizeBytes))
+			Logger.Info("rewrite to default config", zap.Int64("bufSizeBytes", defaultBufSizeBytes))
 			return nil
 		}
 
 		if bufSize < 50*1024*1024 {
-			logger.Warn("buf size bytes too small", zap.Int64("bytes", bufSize))
+			Logger.Warn("buf size bytes too small", zap.Int64("bytes", bufSize))
 		}
 
 		o.bufSizeBytes = bufSize

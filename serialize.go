@@ -221,7 +221,7 @@ func (enc *IdsEncoder) Write(id int64) (err error) {
 	if enc.baseID == -1 {
 		enc.baseID = id
 		offset = id // set first id as baseID
-		logger.Debug("set write base id", zap.Int64("baseID", id))
+		Logger.Debug("set write base id", zap.Int64("baseID", id))
 	} else {
 		offset = id - enc.baseID // offset
 	}
@@ -236,7 +236,7 @@ func (enc *IdsEncoder) Write(id int64) (err error) {
 		err = enc.gzWriter.WriteFooter()
 	}
 
-	// logger.Debug("write id", zap.Int64("offset", offset), zap.Int64("id", id))
+	// Logger.Debug("write id", zap.Int64("offset", offset), zap.Int64("id", id))
 	return
 }
 
@@ -283,13 +283,13 @@ func (dec *IdsDecoder) LoadMaxId() (maxId int64, err error) {
 		}
 
 		if dec.baseID == -1 {
-			logger.Debug("set baseID", zap.Int64("id", id))
+			Logger.Debug("set baseID", zap.Int64("id", id))
 			dec.baseID = id
 		} else {
 			id += dec.baseID
 		}
 
-		// logger.Debug("load new id", zap.Int64("id", id))
+		// Logger.Debug("load new id", zap.Int64("id", id))
 		if id > maxId {
 			maxId = id
 		}
@@ -311,14 +311,14 @@ func (dec *IdsDecoder) ReadAllToBmap() (ids *roaring.Bitmap, err error) {
 
 		if dec.baseID == -1 {
 			// first id in head of file is baseID
-			logger.Debug("set baseID", zap.Int64("id", id))
+			Logger.Debug("set baseID", zap.Int64("id", id))
 			dec.baseID = id
 		} else {
 			// another ids in rest file are offsets
 			id += dec.baseID
 		}
 
-		// logger.Debug("load new id", zap.Int64("id", id))
+		// Logger.Debug("load new id", zap.Int64("id", id))
 		bitmap.AddInt(int(id))
 	}
 
@@ -337,14 +337,14 @@ func (dec *IdsDecoder) ReadAllToInt64Set(ids Int64SetItf) (err error) {
 
 		if dec.baseID == -1 {
 			// first id in head of file is baseID
-			logger.Debug("set baseID", zap.Int64("id", id))
+			Logger.Debug("set baseID", zap.Int64("id", id))
 			dec.baseID = id
 		} else {
 			// another ids in rest file are offsets
 			id += dec.baseID
 		}
 
-		// logger.Debug("load new id", zap.Int64("id", id))
+		// Logger.Debug("load new id", zap.Int64("id", id))
 		ids.AddInt64(id)
 	}
 
