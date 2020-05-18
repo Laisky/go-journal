@@ -43,7 +43,7 @@ func PrepareDir(path string) error {
 			return errors.Wrapf(err, "create directory `%s` with mod `%d`", path, DirMode)
 		}
 
-		logger.Info("create new directory", zap.String("path", path))
+		Logger.Info("create new directory", zap.String("path", path))
 		return nil
 	} else if err != nil {
 		return errors.Wrapf(err, "get stat of path `%s`", path)
@@ -66,7 +66,7 @@ type bufFileStat struct {
 // if `isScan=true`, will scan exists buf files to find latest ids/data file, and update fsState.
 // if `isScan=false`, will use oldFsStat as latest ids/data file.
 func PrepareNewBufFile(dirPath string, oldFsStat *bufFileStat, isScan, isGz bool, sizeBytes int64) (fsStat *bufFileStat, err error) {
-	logger := utils.Logger.With(
+	logger := Logger.With(
 		zap.String("dirpath", dirPath),
 		zap.Bool("is_scan", isScan),
 		zap.Bool("is_gz", isGz),
@@ -134,7 +134,7 @@ func PrepareNewBufFile(dirPath string, oldFsStat *bufFileStat, isScan, isGz bool
 	if latestDataFName == "" {
 		latestDataFName = now.Format(defaultFileNameTimeLayout) + "_00000001.buf"
 	} else {
-		if latestDataFName, err = GenerateNewBufFName(now, latestDataFName, isGz); err != nil {
+		if latestDataFName, err = GenerateNewBufFName(now, latestDataFName); err != nil {
 			return nil, errors.Wrapf(err, "generate new data fname `%s`", latestDataFName)
 		}
 	}
@@ -143,14 +143,14 @@ func PrepareNewBufFile(dirPath string, oldFsStat *bufFileStat, isScan, isGz bool
 	if latestIDsFName == "" {
 		latestIDsFName = now.Format(defaultFileNameTimeLayout) + "_00000001.ids"
 	} else {
-		if latestIDsFName, err = GenerateNewBufFName(now, latestIDsFName, isGz); err != nil {
+		if latestIDsFName, err = GenerateNewBufFName(now, latestIDsFName); err != nil {
 			return nil, errors.Wrapf(err, "generate new ids fname `%s`", latestIDsFName)
 		}
 	}
 
 	if isGz {
-		latestDataFName += ".gz"
-		latestDataFName += ".gz"
+		latestDataFName = appendGzSuffix(latestDataFName)
+		latestIDsFName = appendGzSuffix(latestIDsFName)
 	}
 
 	if fsStat.NewDataFp, err = OpenBufFile(filepath.Join(dirPath, latestDataFName), sizeBytes/2); err != nil {
@@ -167,9 +167,17 @@ func PrepareNewBufFile(dirPath string, oldFsStat *bufFileStat, isScan, isGz bool
 	return fsStat, nil
 }
 
+func appendGzSuffix(fname string) string {
+	if !strings.HasSuffix(strings.ToLower(fname), ".gz") {
+		fname += ".gz"
+	}
+
+	return fname
+}
+
 // OpenBufFile create and open file
 func OpenBufFile(filepath string, preallocateBytes int64) (fp *os.File, err error) {
-	logger.Debug("create file with preallocate",
+	Logger.Debug("create file with preallocate",
 		zap.Int64("preallocate", preallocateBytes),
 		zap.String("file", filepath))
 	if fp, err = os.OpenFile(filepath, os.O_RDWR|os.O_CREATE, FileMode); err != nil {
@@ -187,8 +195,8 @@ func OpenBufFile(filepath string, preallocateBytes int64) (fp *os.File, err erro
 
 // GenerateNewBufFName return new buf file name depends on current time
 // file name looks like `yyyymmddnnnn.ids`, nnnn begin from 0001 for each day
-func GenerateNewBufFName(now time.Time, oldFName string, isGz bool) (string, error) {
-	logger.Debug("GenerateNewBufFName", zap.Time("now", now), zap.String("oldFName", oldFName))
+func GenerateNewBufFName(now time.Time, oldFName string) (string, error) {
+	Logger.Debug("GenerateNewBufFName", zap.Time("now", now), zap.String("oldFName", oldFName))
 	finfo := strings.SplitN(oldFName, ".", 2) // {name, ext}
 	if len(finfo) < 2 {
 		return oldFName, fmt.Errorf("oldFname `%s` not correct", oldFName)
@@ -196,11 +204,7 @@ func GenerateNewBufFName(now time.Time, oldFName string, isGz bool) (string, err
 
 	fts := finfo[0][:8]
 	fidx := finfo[0][9:]
-	fext := finfo[1]
-	if isGz && !strings.HasSuffix(fext, ".gz") {
-		fext += ".gz"
-	}
-
+	fext := strings.ToLower(finfo[1])
 	if now.Format(defaultFileNameTimeLayout) != fts {
 		return now.Format(defaultFileNameTimeLayout) + "_00000001." + fext, nil
 	}

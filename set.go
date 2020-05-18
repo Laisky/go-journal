@@ -132,7 +132,7 @@ const (
 // NewInt64SetWithTTL create new int64 set with ttl
 func NewInt64SetWithTTL(ctx context.Context, ttl time.Duration) *Int64SetWithTTL {
 	if ttl < defaultIDSetTTL {
-		logger.Warn("TTL too small")
+		Logger.Warn("TTL too small")
 	}
 
 	s := &Int64SetWithTTL{
@@ -142,7 +142,7 @@ func NewInt64SetWithTTL(ctx context.Context, ttl time.Duration) *Int64SetWithTTL
 		ttlSec:   int64(ttl.Seconds()),
 		ng:       &sync.Map{},
 	}
-	logger.Debug("NewInt64SetWithTTL",
+	Logger.Debug("NewInt64SetWithTTL",
 		zap.Duration("ttl", s.ttl),
 	)
 	go s.StartRotate(ctx)
@@ -181,18 +181,18 @@ func (s *Int64SetWithTTL) CheckAndRemove(id int64) (ok bool) {
 		vi interface{}
 	)
 	if _, ok = s.ng.Load(id); ok {
-		// logger.Debug("found in ng")
+		// Logger.Debug("found in ng")
 		return true
 	}
 
 	if s.og != nil {
 		if vi, ok = s.og.Load(id); ok {
 			if vi.(int64) > t {
-				logger.Debug("found in og")
+				Logger.Debug("found in og")
 				return true
 			}
 
-			// logger.Debug("found in og, but expired")
+			// Logger.Debug("found in og, but expired")
 			s.og.Delete(id)
 			atomic.AddInt64(&s.ogN, -1)
 		}
@@ -216,7 +216,7 @@ func (s *Int64SetWithTTL) Close() {
 
 // StartRotate start counter rotate
 func (s *Int64SetWithTTL) StartRotate(ctx context.Context) {
-	defer logger.Info("StartRotate exit")
+	defer Logger.Info("StartRotate exit")
 	for {
 		select {
 		case <-s.stopChan:
@@ -228,7 +228,7 @@ func (s *Int64SetWithTTL) StartRotate(ctx context.Context) {
 
 		time.Sleep(s.ttl)
 		s.Lock()
-		logger.Debug("rotate Int64SetWithTTL")
+		Logger.Debug("rotate Int64SetWithTTL")
 		s.ogN, s.ngN = s.ngN, 0
 		s.og = s.ng
 		s.ng = &sync.Map{}

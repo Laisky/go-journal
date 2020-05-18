@@ -62,7 +62,7 @@ func TestGenerateNewBufFName(t *testing.T) {
 		if err != nil {
 			t.Fatalf("got error: %+v", err)
 		}
-		newFName, err = GenerateNewBufFName(now, testcase.OldFName, false)
+		newFName, err = GenerateNewBufFName(now, testcase.OldFName)
 		if err != nil {
 			t.Fatalf("got error: %+v", err)
 		}
@@ -113,8 +113,8 @@ const (
 
 func BenchmarkFSPreallocate(b *testing.B) {
 	var err error
-	// utils.Logger.ChangeLevel("error")
-	if err = utils.Logger.ChangeLevel("error"); err != nil {
+	// Logger.ChangeLevel("error")
+	if err = Logger.ChangeLevel("error"); err != nil {
 		b.Fatalf("set level: %+v", err)
 	}
 	// create data files
