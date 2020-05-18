@@ -62,7 +62,7 @@ func TestGenerateNewBufFName(t *testing.T) {
 		if err != nil {
 			t.Fatalf("got error: %+v", err)
 		}
-		newFName, err = GenerateNewBufFName(now, testcase.OldFName, false)
+		newFName, err = GenerateNewBufFName(now, testcase.OldFName)
 		if err != nil {
 			t.Fatalf("got error: %+v", err)
 		}

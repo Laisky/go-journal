@@ -134,7 +134,7 @@ func PrepareNewBufFile(dirPath string, oldFsStat *bufFileStat, isScan, isGz bool
 	if latestDataFName == "" {
 		latestDataFName = now.Format(defaultFileNameTimeLayout) + "_00000001.buf"
 	} else {
-		if latestDataFName, err = GenerateNewBufFName(now, latestDataFName, isGz); err != nil {
+		if latestDataFName, err = GenerateNewBufFName(now, latestDataFName); err != nil {
 			return nil, errors.Wrapf(err, "generate new data fname `%s`", latestDataFName)
 		}
 	}
@@ -143,14 +143,14 @@ func PrepareNewBufFile(dirPath string, oldFsStat *bufFileStat, isScan, isGz bool
 	if latestIDsFName == "" {
 		latestIDsFName = now.Format(defaultFileNameTimeLayout) + "_00000001.ids"
 	} else {
-		if latestIDsFName, err = GenerateNewBufFName(now, latestIDsFName, isGz); err != nil {
+		if latestIDsFName, err = GenerateNewBufFName(now, latestIDsFName); err != nil {
 			return nil, errors.Wrapf(err, "generate new ids fname `%s`", latestIDsFName)
 		}
 	}
 
 	if isGz {
-		latestDataFName += ".gz"
-		latestDataFName += ".gz"
+		latestDataFName = appendGzSuffix(latestDataFName)
+		latestIDsFName = appendGzSuffix(latestIDsFName)
 	}
 
 	if fsStat.NewDataFp, err = OpenBufFile(filepath.Join(dirPath, latestDataFName), sizeBytes/2); err != nil {
@@ -165,6 +165,14 @@ func PrepareNewBufFile(dirPath string, oldFsStat *bufFileStat, isScan, isGz bool
 		zap.String("ids_file", latestIDsFName),
 		zap.String("data_file", latestDataFName))
 	return fsStat, nil
+}
+
+func appendGzSuffix(fname string) string {
+	if !strings.HasSuffix(strings.ToLower(fname), ".gz") {
+		fname += ".gz"
+	}
+
+	return fname
 }
 
 // OpenBufFile create and open file
@@ -187,7 +195,7 @@ func OpenBufFile(filepath string, preallocateBytes int64) (fp *os.File, err erro
 
 // GenerateNewBufFName return new buf file name depends on current time
 // file name looks like `yyyymmddnnnn.ids`, nnnn begin from 0001 for each day
-func GenerateNewBufFName(now time.Time, oldFName string, isGz bool) (string, error) {
+func GenerateNewBufFName(now time.Time, oldFName string) (string, error) {
 	Logger.Debug("GenerateNewBufFName", zap.Time("now", now), zap.String("oldFName", oldFName))
 	finfo := strings.SplitN(oldFName, ".", 2) // {name, ext}
 	if len(finfo) < 2 {
@@ -196,11 +204,7 @@ func GenerateNewBufFName(now time.Time, oldFName string, isGz bool) (string, err
 
 	fts := finfo[0][:8]
 	fidx := finfo[0][9:]
-	fext := finfo[1]
-	if isGz && !strings.HasSuffix(fext, ".gz") {
-		fext += ".gz"
-	}
-
+	fext := strings.ToLower(finfo[1])
 	if now.Format(defaultFileNameTimeLayout) != fts {
 		return now.Format(defaultFileNameTimeLayout) + "_00000001." + fext, nil
 	}
