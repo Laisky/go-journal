@@ -13,7 +13,14 @@ import (
 	"github.com/pkg/errors"
 )
 
-var logger = utils.Logger.Named("go-journal")
+var logger *utils.LoggerType
+
+func init() {
+	var err error
+	if logger, err = utils.NewConsoleLoggerWithName("go-journal", "info"); err != nil {
+		utils.Logger.Panic("new journal logger", zap.Error(err))
+	}
+}
 
 // Journal redo log consist by msgs and committed ids
 type Journal struct {
@@ -49,7 +56,7 @@ func NewJournal(opts ...OptionFunc) (j *Journal, err error) {
 		}
 	}
 
-	j.logger = utils.Logger.Named(j.name)
+	j.logger = logger.Named(j.name)
 	j.logger.Info("new journal",
 		zap.String("bufDirPath", j.bufDirPath),
 		zap.Int64("bufSizeBytes", j.bufSizeBytes),

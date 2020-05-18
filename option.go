@@ -1,8 +1,10 @@
 package journal
 
 import (
+	"fmt"
 	"time"
 
+	"github.com/Laisky/go-utils"
 	"github.com/Laisky/zap"
 	"github.com/coreos/etcd/pkg/fileutil"
 	"github.com/pkg/errors"
@@ -52,6 +54,17 @@ func newOption() *option {
 }
 
 type OptionFunc func(*option) error
+
+func WithLogger(l *utils.LoggerType) OptionFunc {
+	return func(o *option) error {
+		if l == nil {
+			return fmt.Errorf("logger cannot be nil")
+		}
+
+		logger = l
+		return nil
+	}
+}
 
 func WithRotateDuration(d time.Duration) OptionFunc {
 	return func(o *option) error {

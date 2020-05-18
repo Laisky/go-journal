@@ -66,7 +66,7 @@ type bufFileStat struct {
 // if `isScan=true`, will scan exists buf files to find latest ids/data file, and update fsState.
 // if `isScan=false`, will use oldFsStat as latest ids/data file.
 func PrepareNewBufFile(dirPath string, oldFsStat *bufFileStat, isScan, isGz bool, sizeBytes int64) (fsStat *bufFileStat, err error) {
-	logger := utils.Logger.With(
+	logger := logger.With(
 		zap.String("dirpath", dirPath),
 		zap.Bool("is_scan", isScan),
 		zap.Bool("is_gz", isGz),
