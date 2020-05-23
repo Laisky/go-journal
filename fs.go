@@ -74,6 +74,7 @@ func PrepareNewBufFile(dirPath string, oldFsStat *bufFileStat, isScan, isGz bool
 		zap.Bool("is_gz", isGz),
 	)
 	logger.Debug("call PrepareNewBufFile")
+	fsStat = &bufFileStat{}
 
 	// scan directories
 	var (
@@ -84,7 +85,6 @@ func PrepareNewBufFile(dirPath string, oldFsStat *bufFileStat, isScan, isGz bool
 	// scan existing buf files.
 	// update legacyLoader or first run.
 	if isScan || oldFsStat == nil {
-		fsStat = &bufFileStat{}
 		if fs, err = ioutil.ReadDir(dirPath); err != nil {
 			return nil, errors.Wrapf(err, "read files in dir `%s`", dirPath)
 		}
@@ -125,9 +125,6 @@ func PrepareNewBufFile(dirPath string, oldFsStat *bufFileStat, isScan, isGz bool
 			zap.Strings("ids_fs", fsStat.OldIDsDataFnames))
 	} else {
 		// do not change old file names
-		fsStat = oldFsStat
-		fsStat.OldDataFnames = append(fsStat.OldDataFnames, oldFsStat.NewDataFp.Name())
-		fsStat.OldIDsDataFnames = append(fsStat.OldIDsDataFnames, oldFsStat.NewIDsFp.Name())
 		_, latestDataFName = filepath.Split(oldFsStat.NewDataFp.Name())
 		_, latestIDsFName = filepath.Split(oldFsStat.NewIDsFp.Name())
 	}
