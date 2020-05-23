@@ -278,7 +278,7 @@ func (j *Journal) Rotate(ctx context.Context) (err error) {
 		j.refreshLegacyLoader(ctx)
 		j.UnLockLegacy()
 	} else {
-		j.logger.Debug("can not acquire legacy lock, so only create new file",
+		j.logger.Debug("not acquired legacy lock, so only create new file",
 			zap.String("dir", j.bufDirPath))
 		// no need to scan old buf files
 		if j.fsStat, err = PrepareNewBufFile(j.bufDirPath, j.fsStat, false, j.isCompress, j.bufSizeBytes); err != nil {

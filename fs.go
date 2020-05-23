@@ -63,8 +63,10 @@ type bufFileStat struct {
 }
 
 // PrepareNewBufFile create new data & id files, and update bufFileStat.
-// if `isScan=true`, will scan exists buf files to find latest ids/data file, and update fsState.
-// if `isScan=false`, will use oldFsStat as latest ids/data file.
+// * if `isScan=true`, will scan directory to find existing buf files,
+//   then generate new buf files.
+//
+// * if `isScan=false`, keep old buf files, directly generate new file without scan directory.
 func PrepareNewBufFile(dirPath string, oldFsStat *bufFileStat, isScan, isGz bool, sizeBytes int64) (fsStat *bufFileStat, err error) {
 	logger := Logger.With(
 		zap.String("dirpath", dirPath),
@@ -73,7 +75,6 @@ func PrepareNewBufFile(dirPath string, oldFsStat *bufFileStat, isScan, isGz bool
 	)
 	logger.Debug("call PrepareNewBufFile")
 
-	fsStat = &bufFileStat{}
 	// scan directories
 	var (
 		latestDataFName, latestIDsFName string
@@ -83,6 +84,7 @@ func PrepareNewBufFile(dirPath string, oldFsStat *bufFileStat, isScan, isGz bool
 	// scan existing buf files.
 	// update legacyLoader or first run.
 	if isScan || oldFsStat == nil {
+		fsStat = &bufFileStat{}
 		if fs, err = ioutil.ReadDir(dirPath); err != nil {
 			return nil, errors.Wrapf(err, "read files in dir `%s`", dirPath)
 		}
@@ -116,14 +118,16 @@ func PrepareNewBufFile(dirPath string, oldFsStat *bufFileStat, isScan, isGz bool
 			}
 		}
 
-		logger.Debug("find latest journal files",
+		logger.Debug("scan journal files",
 			zap.String("latest_data_file", latestDataFName),
 			zap.String("latest_ids_file", latestIDsFName),
 			zap.Strings("data_fs", fsStat.OldDataFnames),
 			zap.Strings("ids_fs", fsStat.OldIDsDataFnames))
 	} else {
-		fsStat.OldDataFnames = append(fsStat.OldDataFnames, fsStat.NewDataFp.Name())
-		fsStat.OldIDsDataFnames = append(fsStat.OldIDsDataFnames, fsStat.NewIDsFp.Name())
+		// do not change old file names
+		fsStat = oldFsStat
+		fsStat.OldDataFnames = append(fsStat.OldDataFnames, oldFsStat.NewDataFp.Name())
+		fsStat.OldIDsDataFnames = append(fsStat.OldIDsDataFnames, oldFsStat.NewIDsFp.Name())
 		_, latestDataFName = filepath.Split(oldFsStat.NewDataFp.Name())
 		_, latestIDsFName = filepath.Split(oldFsStat.NewIDsFp.Name())
 	}
