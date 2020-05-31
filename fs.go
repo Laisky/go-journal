@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	utils "github.com/Laisky/go-utils"
@@ -37,6 +38,9 @@ func isFileGZ(fname string) bool {
 
 // PrepareDir `mkdir -p`
 func PrepareDir(path string) error {
+	ou := syscall.Umask(0)
+	defer syscall.Umask(ou)
+
 	info, err := os.Stat(path)
 	if os.IsNotExist(err) {
 		if err = os.MkdirAll(path, DirMode); err != nil {

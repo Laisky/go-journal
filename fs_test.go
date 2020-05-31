@@ -7,6 +7,7 @@ import (
 	"io/ioutil"
 	"log"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -343,4 +344,32 @@ func BenchmarkData(b *testing.B) {
 			}
 		}
 	})
+}
+
+func TestPrepareDir(t *testing.T) {
+	dir, err := ioutil.TempDir("", "journal-test")
+	if err != nil {
+		log.Fatal(err)
+	}
+	t.Logf("create directory: %v", dir)
+	defer os.RemoveAll(dir)
+
+	dirpath := filepath.Join(dir, "aa")
+	if err := PrepareDir(dirpath); err != nil {
+		t.Fatal(err)
+	}
+
+	finfo, err := os.Stat(dirpath)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	get := finfo.Mode()
+	want := DirMode
+
+	t.Logf("get: %v(%d)", get, get)
+	t.Logf("want: %v(%d)", want, want)
+	if get != want {
+		t.Fatal()
+	}
 }
