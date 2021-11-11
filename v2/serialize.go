@@ -272,8 +272,8 @@ func (enc *IdsEncoder) Close() (err error) {
 	return
 }
 
-// LoadMaxId load the maxium id in all files
-func (dec *IdsDecoder) LoadMaxId() (maxId int64, err error) {
+// LoadMaxID load the maxium id in all files
+func (dec *IdsDecoder) LoadMaxID() (maxID int64, err error) {
 	var id int64
 	for {
 		if err = binary.Read(dec.reader, bitOrder, &id); err == io.EOF {
@@ -290,12 +290,12 @@ func (dec *IdsDecoder) LoadMaxId() (maxId int64, err error) {
 		}
 
 		// Logger.Debug("load new id", zap.Int64("id", id))
-		if id > maxId {
-			maxId = id
+		if id > maxID {
+			maxID = id
 		}
 	}
 
-	return maxId, nil
+	return maxID, nil
 }
 
 // ReadAllToBmap read all ids in all files into bmap

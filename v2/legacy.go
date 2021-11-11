@@ -167,9 +167,9 @@ READ_NEW_LINE:
 	return nil
 }
 
-// LoadMaxId load max id from all ids files
-func (l *LegacyLoader) LoadMaxId() (maxId int64, err error) {
-	l.logger.Debug("LoadMaxId...")
+// LoadMaxID load max id from all ids files
+func (l *LegacyLoader) LoadMaxID() (maxID int64, err error) {
+	l.logger.Debug("LoadMaxId")
 	var (
 		fp         *os.File
 		id         int64
@@ -191,7 +191,7 @@ func (l *LegacyLoader) LoadMaxId() (maxId int64, err error) {
 			continue
 		}
 
-		if id, err = idsDecoder.LoadMaxId(); err != nil {
+		if id, err = idsDecoder.LoadMaxID(); err != nil {
 			l.logger.Error("read ids decoder",
 				zap.Error(err),
 				zap.String("fname", fp.Name()),
@@ -199,13 +199,13 @@ func (l *LegacyLoader) LoadMaxId() (maxId int64, err error) {
 			continue
 		}
 
-		if id > maxId {
-			maxId = id
+		if id > maxID {
+			maxID = id
 		}
 	}
 
 	l.logger.Debug("load max id done",
-		zap.Int64("max_id", maxId),
+		zap.Int64("max_id", maxID),
 		zap.Float64("sec", utils.Clock.GetUTCNow().Sub(startTs).Seconds()))
 	return id, nil
 }

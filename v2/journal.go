@@ -32,7 +32,7 @@ type Journal struct {
 
 	stopChan               chan struct{}
 	rotateLock, legacyLock *utils.Mutex
-	dataFp, idsFp          *os.File // current writting journal file
+	dataFp, idsFp          *os.File // current writing journal file
 	fsStat                 *bufFileStat
 	legacy                 *LegacyLoader
 	dataEnc                *DataEncoder
@@ -184,9 +184,9 @@ func (j *Journal) startRotateTrigger(ctx context.Context) {
 	}
 }
 
-// LoadMaxId load max id from journal ids files
-func (j *Journal) LoadMaxId() (int64, error) {
-	return j.legacy.LoadMaxId()
+// LoadMaxID load max id from journal ids files
+func (j *Journal) LoadMaxID() (int64, error) {
+	return j.legacy.LoadMaxID()
 }
 
 // WriteData write data to journal
@@ -202,8 +202,8 @@ func (j *Journal) WriteData(data *Data) (err error) {
 	return j.dataEnc.Write(data)
 }
 
-// WriteId write id to journal
-func (j *Journal) WriteId(id int64) error {
+// WriteID write id to journal
+func (j *Journal) WriteID(id int64) error {
 	j.RLock() // will blocked by flush & rotate
 	defer j.RUnlock()
 

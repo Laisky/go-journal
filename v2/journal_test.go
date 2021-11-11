@@ -90,7 +90,7 @@ func TestJournal(t *testing.T) {
 			continue
 		}
 
-		if err = j.WriteId(id); err != nil {
+		if err = j.WriteID(id); err != nil {
 			t.Fatalf("got error: %+v", err)
 		}
 	}
@@ -163,7 +163,7 @@ func BenchmarkJournal(b *testing.B) {
 			b.Fatalf("got error: %+v", err)
 		}
 
-		if err = j.WriteId(id); err != nil {
+		if err = j.WriteID(id); err != nil {
 			b.Fatalf("got error: %+v", err)
 		}
 	})
