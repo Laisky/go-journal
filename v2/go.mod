@@ -3,14 +3,14 @@ module github.com/Laisky/go-journal/v2
 go 1.13
 
 require (
-	github.com/Laisky/go-utils v1.15.1-0.20211101064140-2bd64d8597b8
+	github.com/Laisky/go-utils v1.15.1-0.20211115023229-ad5e35076bb4
 	github.com/Laisky/zap v1.12.3-0.20210804015521-853b5a8ec429
 	github.com/RoaringBitmap/roaring v0.4.23
+	github.com/cockroachdb/pebble v0.0.0-20211110184633-447349ef50e6
 	github.com/coreos/etcd v3.3.20+incompatible
 	github.com/form3tech-oss/jwt-go v3.2.5+incompatible // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/klauspost/compress v1.13.6 // indirect
-	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
 	github.com/ncw/directio v1.0.5
 	github.com/pkg/errors v0.9.1
 	github.com/spf13/viper v1.9.0 // indirect

@@ -2,6 +2,8 @@ package journal
 
 import (
 	"bufio"
+	"bytes"
+	"encoding/binary"
 	"io"
 	"io/ioutil"
 	"math"
@@ -280,4 +282,28 @@ func TestCodec(t *testing.T) {
 
 		t.Log(string(data["message"].(map[string]interface{})["log"].([]byte)))
 	}
+}
+
+func BenchmarkBinaryChunk(b *testing.B) {
+	var fp bytes.Buffer
+
+	for i := 0; i < 1000000000; i++ {
+		if err := binary.Write(&fp, binary.BigEndian, int64(i)); err != nil {
+			b.Fatal(err)
+		}
+	}
+
+	var i int64
+	b.Run("normal", func(b *testing.B) {
+		for n := 0; n < b.N; n++ {
+			if err := binary.Read(&fp, binary.BigEndian, &i); err != nil {
+				if err == io.EOF {
+					return
+				}
+
+				b.Fatal(err)
+			}
+		}
+	})
+
 }

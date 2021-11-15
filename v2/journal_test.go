@@ -1,17 +1,21 @@
 package journal
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"io"
 	"io/ioutil"
 	"log"
 	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	utils "github.com/Laisky/go-utils"
+	gutils "github.com/Laisky/go-utils"
+	"github.com/cockroachdb/pebble"
 )
 
 func BenchmarkLock(b *testing.B) {
@@ -38,7 +42,7 @@ func BenchmarkLock(b *testing.B) {
 func fakedata(length int) map[int64]interface{} {
 	m := make(map[int64]interface{}, length)
 	for i := 0; i < length; i++ {
-		m[int64(i)] = utils.RandomStringWithLength(100 + i)
+		m[int64(i)] = gutils.RandomStringWithLength(100 + i)
 	}
 
 	return m
@@ -128,6 +132,10 @@ func TestJournal(t *testing.T) {
 	}
 }
 
+/*
+BenchmarkJournal/store-16                 233775              5310 ns/op              80 B/op          5 allocs/op
+BenchmarkJournal/pebble-16                123537              9562 ns/op             319 B/op          0 allocs/op
+*/
 func BenchmarkJournal(b *testing.B) {
 	dir, err := ioutil.TempDir("", "journal-test-bench")
 	if err != nil {
@@ -158,13 +166,32 @@ func BenchmarkJournal(b *testing.B) {
 	id := int64(1)
 
 	b.Run("store", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			if err = j.WriteData(data); err != nil {
+				b.Fatalf("got error: %+v", err)
+			}
 
-		if err = j.WriteData(data); err != nil {
-			b.Fatalf("got error: %+v", err)
+			if err = j.WriteID(id); err != nil {
+				b.Fatalf("got error: %+v", err)
+			}
 		}
+	})
 
-		if err = j.WriteID(id); err != nil {
-			b.Fatalf("got error: %+v", err)
+	dataB, err := gutils.JSON.Marshal(data)
+	gutils.PanicIfErr(err)
+
+	buf := new(bytes.Buffer)
+	err = binary.Write(buf, binary.LittleEndian, data.ID)
+	gutils.PanicIfErr(err)
+	idB := buf.Bytes()
+
+	// peddle
+	pdb, err := pebble.Open(filepath.Join(dir, "peddle"), &pebble.Options{})
+	gutils.PanicIfErr(err)
+	b.Run("pebble", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			err := pdb.Set(idB, dataB, pebble.NoSync)
+			gutils.PanicIfErr(err)
 		}
 	})
 
@@ -172,13 +199,15 @@ func BenchmarkJournal(b *testing.B) {
 		b.Fatalf("got error: %+v", err)
 	}
 
-	j.LockLegacy()
 	b.Run("load", func(b *testing.B) {
-		if err = j.LoadLegacyBuf(data); err == io.EOF {
-			return
-		} else if err != nil {
-			b.Fatalf("got error: %+v", err)
+		for i := 0; i < b.N; i++ {
+			j.LockLegacy()
+			defer j.UnLockLegacy()
+			if err = j.LoadLegacyBuf(data); err == io.EOF {
+				return
+			} else if err != nil {
+				b.Fatalf("got error: %+v", err)
+			}
 		}
 	})
-
 }

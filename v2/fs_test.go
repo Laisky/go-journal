@@ -107,19 +107,21 @@ func TestPrepareNewBufFile(t *testing.T) {
 	}
 }
 
-const (
-	benchmarkFsDir = "/data/fluentd/go-utils/"
-	// benchmarkFsDir = "/Users/laisky/Downloads/"
-)
-
 func BenchmarkFSPreallocate(b *testing.B) {
 	var err error
 	// Logger.ChangeLevel("error")
 	if err = Logger.ChangeLevel("error"); err != nil {
 		b.Fatalf("set level: %+v", err)
 	}
+
+	dir, err := ioutil.TempDir("", "journal-test-fs")
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+
 	// create data files
-	dataFp1, err := directio.OpenFile(benchmarkFsDir+"fp1.dat", os.O_RDWR|os.O_CREATE, FileMode)
+	dataFp1, err := directio.OpenFile(dir+"fp1.dat", os.O_RDWR|os.O_CREATE, FileMode)
 	// dataFp1, err := ioutil.TempFile("", "journal-test")
 	if err != nil {
 		b.Fatalf("%+v", err)
@@ -128,7 +130,7 @@ func BenchmarkFSPreallocate(b *testing.B) {
 	defer os.Remove(dataFp1.Name())
 	b.Logf("create file name: %v", dataFp1.Name())
 
-	dataFp2, err := directio.OpenFile(benchmarkFsDir+"fp2.dat", os.O_RDWR|os.O_CREATE, FileMode)
+	dataFp2, err := directio.OpenFile(dir+"fp2.dat", os.O_RDWR|os.O_CREATE, FileMode)
 	if err != nil {
 		b.Fatalf("%+v", err)
 	}
@@ -136,7 +138,7 @@ func BenchmarkFSPreallocate(b *testing.B) {
 	defer os.Remove(dataFp2.Name())
 	b.Logf("create file name: %v", dataFp2.Name())
 
-	dataFp3, err := directio.OpenFile(benchmarkFsDir+"fp3.dat", os.O_RDWR|os.O_CREATE, FileMode)
+	dataFp3, err := directio.OpenFile(dir+"fp3.dat", os.O_RDWR|os.O_CREATE, FileMode)
 	if err != nil {
 		b.Fatalf("%+v", err)
 	}
