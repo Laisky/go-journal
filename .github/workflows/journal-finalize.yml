@@ -1,0 +1,132 @@
+name: Journal finalization
+on:
+  push:
+    branches: [fix/go127-journal-reliability]
+    paths: [.github/workflows/journal-finalize.yml]
+permissions:
+  contents: write
+jobs:
+  finalize:
+    if: github.repository == 'Laisky/go-journal' && github.ref == 'refs/heads/fix/go127-journal-reliability'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.27.x'
+      - name: Reproduce unreadable-segment handling
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('reliability_test.go');s=p.read_text();s+=r'''
+          func TestRegressionUnreadableLegacyIsNotEOF(t *testing.T) {
+              for _,missing:=range []bool{false,true} {
+                  t.Run(map[bool]string{false:"corrupt",true:"missing"}[missing],func(t *testing.T){
+                      dir:=t.TempDir();old,current:=filepath.Join(dir,"old.buf"),filepath.Join(dir,"current.buf")
+                      if !missing {if err:=os.WriteFile(old,[]byte{0xc1},0600);err!=nil{t.Fatal(err)}}
+                      if err:=os.WriteFile(current,nil,0600);err!=nil{t.Fatal(err)}
+                      ctx,cancel:=context.WithCancel(context.Background());defer cancel()
+                      l:=NewLegacyLoader(ctx,Logger,[]string{old,current},nil,false,time.Minute)
+                      for attempt:=0;attempt<2;attempt++ {
+                          err:=l.Load(&Data{})
+                          if err==nil || err==io.EOF {t.Errorf("attempt %d: unreadable segment treated as consumed: %v",attempt,err)}
+                      }
+                  })
+              }
+          }
+          ''';p.write_text(s)
+          PY
+          gofmt -w reliability_test.go
+          git config user.name 'Laisky'
+          git config user.email 'public@laisky.com'
+          git add reliability_test.go
+          git commit -m 'test: reproduce unreadable journal segments being treated as consumed'
+          git push origin HEAD:refs/heads/fix/go127-journal-reliability
+          python3 - <<'PY'
+          import subprocess
+          p=subprocess.run(['go','test','-mod=readonly','-v','-run','^TestRegressionUnreadableLegacyIsNotEOF$','./...'],capture_output=True,text=True)
+          output=p.stdout+p.stderr;print(output)
+          assert p.returncode!=0 and 'unreadable segment treated as consumed' in output
+          PY
+      - name: Preserve unreadable segments and repair the old closed-file fixture
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('legacy.go');s=p.read_text()
+          old='l.logger.Error("open data file", zap.Error(err))\n\t\t\tl.dataFp = nil\n\t\t\tgoto READ_NEW_FILE'
+          assert old in s
+          s=s.replace(old,'l.dataFp = nil\n\t\t\tl.dataFileIdx--\n\t\t\treturn errors.Wrap(err, "open legacy data file")')
+          old='l.logger.Error("decode data file", zap.Error(err))\n\t\t\tl.dataFp = nil\n\t\t\tgoto READ_NEW_FILE'
+          assert old in s
+          s=s.replace(old,'l.dataFp.Close()\n\t\t\tl.dataFp = nil\n\t\t\tl.dataFileIdx--\n\t\t\treturn errors.Wrap(err, "initialize legacy decoder")')
+          old='// current file is broken\n\t\t\tl.logger.Error("load data file", zap.Error(err))'
+          assert old in s
+          s=s.replace(old,'''// Corruption is not EOF. Retain the segment for repair/retry;
+                      // silently skipping it would let the journal delete unread data.
+                      l.dataFp.Close()
+                      l.dataFp = nil
+                      l.dataFileIdx--
+                      return errors.Wrap(err, "read legacy data")''')
+          p.write_text(s)
+          p=Path('legacy_test.go');s=p.read_text()
+          old='t.Logf("got ids: %+v", idmaps)\n\t\tif err = idsEncoder.Write(22); err != nil {\n\t\t\tt.Fatalf("got error: %+v", err)\n\t\t}'
+          assert old in s
+          s=s.replace(old,'''// The encoder's file was intentionally closed above. Refresh the
+                  // in-memory ID set here, not the already-closed disk writer.
+                  idmaps.AddInt64(22)
+                  if got := idmaps.GetLen(); got != 3 { t.Fatalf("unique ID count=%d, want 3", got) }''')
+          p.write_text(s)
+          PY
+          gofmt -w legacy.go legacy_test.go
+          go test -mod=readonly -count=1 -timeout=180s ./...
+          go test -mod=readonly -race -count=1 -timeout=180s ./...
+          go test -mod=readonly -race -count=10 -timeout=180s -run TestRegression ./...
+          go vet -mod=readonly ./...
+          go build -mod=readonly ./...
+          git add legacy.go legacy_test.go
+          git commit -m 'fix: preserve unreadable journal files and correct closed-writer test fixture'
+          git push origin HEAD:refs/heads/fix/go127-journal-reliability
+      - name: Install permanent read-only checks and remove migration machinery
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          Path('.github/workflows/go.yml').write_text('''name: Go
+          on:
+            push:
+              branches: [master]
+            pull_request:
+              branches: [master]
+            workflow_dispatch:
+          permissions:
+            contents: read
+          jobs:
+            test:
+              runs-on: ubuntu-latest
+              timeout-minutes: 10
+              steps:
+                - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+                  with:
+                    persist-credentials: false
+                - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+                  with:
+                    go-version: '1.27.x'
+                - run: go version
+                - run: go mod verify
+                - run: go build -mod=readonly ./...
+                - run: go vet -mod=readonly ./...
+                - run: go test -mod=readonly -count=1 -timeout=180s ./...
+                - run: go test -mod=readonly -race -count=1 -timeout=180s ./...
+                - run: go test -mod=readonly -race -count=10 -timeout=180s -run TestRegression ./...
+                - run: git diff --exit-code -- go.mod go.sum
+          ''')
+          for name in ['migration.yml','journal-repair.yml','journal-finalize.yml']:
+              Path('.github/workflows',name).unlink()
+          PY
+          git add .github/workflows
+          git diff --cached --check
+          git commit -m 'ci: retain Go 1.27 verification without migration write permissions'
+          git push origin HEAD:refs/heads/fix/go127-journal-reliability
+          git rev-parse HEAD
