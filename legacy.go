@@ -129,23 +129,28 @@ READ_NEW_FILE:
 			zap.String("fname", l.dataFNames[l.dataFileIdx]))
 		l.dataFp, err = os.Open(l.dataFNames[l.dataFileIdx])
 		if err != nil {
-			l.logger.Error("open data file", zap.Error(err))
 			l.dataFp = nil
-			goto READ_NEW_FILE
+			l.dataFileIdx--
+			return errors.Wrap(err, "open legacy data file")
 		}
 
 		if l.decoder, err = NewDataDecoder(l.dataFp, isFileGZ(l.dataFp.Name())); err != nil {
-			l.logger.Error("decode data file", zap.Error(err))
+			l.dataFp.Close()
 			l.dataFp = nil
-			goto READ_NEW_FILE
+			l.dataFileIdx--
+			return errors.Wrap(err, "initialize legacy decoder")
 		}
 	}
 
 READ_NEW_LINE:
 	if err = l.decoder.Read(data); err != nil {
 		if err != io.EOF {
-			// current file is broken
-			l.logger.Error("load data file", zap.Error(err))
+			// Corruption is not EOF. Retain the segment for repair/retry;
+			// silently skipping it would let the journal delete unread data.
+			l.dataFp.Close()
+			l.dataFp = nil
+			l.dataFileIdx--
+			return errors.Wrap(err, "read legacy data")
 		}
 
 		// read new file
@@ -207,7 +212,7 @@ func (l *LegacyLoader) LoadMaxId() (maxId int64, err error) {
 	l.logger.Debug("load max id done",
 		zap.Int64("max_id", maxId),
 		zap.Float64("sec", utils.Clock.GetUTCNow().Sub(startTs).Seconds()))
-	return id, nil
+	return maxId, nil
 }
 
 // LoadAllids read all ids from ids file into ids set
@@ -254,7 +259,7 @@ func (l *LegacyLoader) LoadAllids(ids Int64SetItf) (err error) {
 	l.logger.Debug("load all ids done",
 		zap.Float64("sec", utils.Clock.GetUTCNow().Sub(startTs).Seconds()))
 	if errMsg != "" {
-		return fmt.Errorf("load all ids: " + errMsg)
+		return fmt.Errorf("load all ids: %s", errMsg)
 	}
 
 	return nil

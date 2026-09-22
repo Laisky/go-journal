@@ -31,6 +31,10 @@ type Journal struct {
 	*option
 
 	stopChan               chan struct{}
+	closeOnce              sync.Once
+	lifecycleMu            sync.Mutex
+	workers                sync.WaitGroup
+	started                bool
 	rotateLock, legacyLock *utils.Mutex
 	dataFp, idsFp          *os.File // current writting journal file
 	fsStat                 *bufFileStat
@@ -69,22 +73,55 @@ func NewJournal(opts ...OptionFunc) (j *Journal, err error) {
 }
 
 func (j *Journal) Start(ctx context.Context) (err error) {
+	j.lifecycleMu.Lock()
+	defer j.lifecycleMu.Unlock()
+	select {
+	case <-j.stopChan:
+		return os.ErrClosed
+	default:
+	}
+	if j.started {
+		return nil
+	}
+
 	if err = j.initBufDir(ctx); err != nil {
 		return errors.Wrap(err, "init buf directory")
 	}
 
-	go j.startFlushTrigger(ctx)
-	go j.startRotateTrigger(ctx)
+	j.started = true
+	j.workers.Add(2)
+	go func() { defer j.workers.Done(); j.startFlushTrigger(ctx) }()
+	go func() { defer j.workers.Done(); j.startRotateTrigger(ctx) }()
 	return
 }
 
+// Close broadcasts shutdown, waits for both workers, and is idempotent.
 func (j *Journal) Close() {
-	j.logger.Info("close Journal")
-
-	j.Lock()
-	j.Flush()
-	j.stopChan <- struct{}{}
-	j.Unlock()
+	j.closeOnce.Do(func() {
+		j.lifecycleMu.Lock()
+		close(j.stopChan)
+		j.lifecycleMu.Unlock()
+		j.workers.Wait()
+		j.Lock()
+		defer j.Unlock()
+		if err := j.Flush(); err != nil {
+			j.logger.Error("flush closing journal", zap.Error(err))
+		}
+		if j.dataFp != nil {
+			j.dataFp.Close()
+			j.dataFp = nil
+		}
+		if j.idsFp != nil {
+			j.idsFp.Close()
+			j.idsFp = nil
+		}
+		j.dataEnc, j.idsEnc = nil, nil
+		if j.legacy != nil {
+			if closer, ok := j.legacy.ids.(interface{ Close() }); ok {
+				closer.Close()
+			}
+		}
+	})
 }
 
 // initBufDir initialize buf directory and create buf files
@@ -112,7 +149,7 @@ func (j *Journal) Flush() (err error) {
 	if j.dataEnc != nil {
 		// j.logger.Debug("flush data")
 		if dataErr := j.dataEnc.Flush(); dataErr != nil {
-			err = errors.Wrap(err, "flush data encoder")
+			err = errors.Wrap(dataErr, "flush data encoder")
 		}
 	}
 
@@ -130,7 +167,7 @@ func (j *Journal) flushAndClose() (err error) {
 
 	if j.dataEnc != nil {
 		if dataErr := j.dataEnc.Close(); dataErr != nil {
-			err = errors.Wrap(err, "flush data encoder")
+			err = errors.Wrap(dataErr, "flush data encoder")
 		}
 	}
 
@@ -141,7 +178,7 @@ func (j *Journal) startFlushTrigger(ctx context.Context) {
 	j.logger.Info("start flush trigger", zap.Duration("interval", j.flushInterval))
 	defer j.logger.Info("journal flush exit")
 
-	defer j.Flush()
+	defer func() { j.Lock(); defer j.Unlock(); j.Flush() }()
 	var err error
 	ticker := time.NewTicker(j.flushInterval)
 	defer ticker.Stop()
@@ -193,6 +230,11 @@ func (j *Journal) LoadMaxId() (int64, error) {
 func (j *Journal) WriteData(data *Data) (err error) {
 	j.RLock() // will blocked by flush & rotate
 	defer j.RUnlock()
+	select {
+	case <-j.stopChan:
+		return os.ErrClosed
+	default:
+	}
 
 	if j.legacy.CheckAndRemove(data.ID) {
 		return
@@ -206,9 +248,17 @@ func (j *Journal) WriteData(data *Data) (err error) {
 func (j *Journal) WriteId(id int64) error {
 	j.RLock() // will blocked by flush & rotate
 	defer j.RUnlock()
+	select {
+	case <-j.stopChan:
+		return os.ErrClosed
+	default:
+	}
 
+	if err := j.idsEnc.Write(id); err != nil {
+		return err
+	}
 	j.legacy.AddID(id)
-	return j.idsEnc.Write(id)
+	return nil
 }
 
 // isReadyToRotate check whether is ready to start rotate.
@@ -259,6 +309,9 @@ func (j *Journal) Rotate(ctx context.Context) (err error) {
 	default:
 	}
 
+	if err = j.syncLocked(); err != nil {
+		return errors.Wrap(err, "sync journal before rotation")
+	}
 	if err = j.flushAndClose(); err != nil {
 		return errors.Wrap(err, "flush and close journal")
 	}
@@ -363,8 +416,8 @@ func (j *Journal) LoadLegacyBuf(data *Data) (err error) {
 		j.logger.Panic("should call `j.LockLegacy()` first")
 	}
 
-	j.RLock()
-	defer j.RUnlock()
+	j.Lock()
+	defer j.Unlock()
 
 	if j.legacy == nil {
 		j.UnLockLegacy()
@@ -373,6 +426,10 @@ func (j *Journal) LoadLegacyBuf(data *Data) (err error) {
 
 	if err = j.legacy.Load(data); err == io.EOF {
 		j.logger.Debug("load all legacy data")
+		if err = j.syncLocked(); err != nil {
+			j.UnLockLegacy()
+			return errors.Wrap(err, "sync replay before cleanup")
+		}
 		if err = j.legacy.Clean(); err != nil {
 			j.logger.Error("clean legacy", zap.Error(err))
 		}
@@ -384,5 +441,41 @@ func (j *Journal) LoadLegacyBuf(data *Data) (err error) {
 		return errors.Wrap(err, "load legacy data")
 	}
 
+	return nil
+}
+
+// Sync makes completed writes durable. It does not wait for work queued in
+// another goroutine: replay callers must WriteData before requesting cleanup.
+func (j *Journal) Sync() error {
+	j.Lock()
+	defer j.Unlock()
+	select {
+	case <-j.stopChan:
+		return os.ErrClosed
+	default:
+	}
+	return j.syncLocked()
+}
+func (j *Journal) syncLocked() error {
+	if err := j.Flush(); err != nil {
+		return err
+	}
+	for _, fp := range []*os.File{j.dataFp, j.idsFp} {
+		if fp != nil {
+			if err := fp.Sync(); err != nil {
+				return errors.Wrap(err, "sync journal file")
+			}
+		}
+	}
+	if j.dataFp != nil || j.idsFp != nil {
+		dir, err := os.Open(j.bufDirPath)
+		if err != nil {
+			return errors.Wrap(err, "open journal directory for sync")
+		}
+		defer dir.Close()
+		if err := dir.Sync(); err != nil {
+			return errors.Wrap(err, "sync journal directory")
+		}
+	}
 	return nil
 }
