@@ -5,12 +5,14 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
 	utils "github.com/Laisky/go-utils"
 	"github.com/Laisky/zap"
 	"github.com/pkg/errors"
+	"github.com/tinylib/msgp/msgp"
 )
 
 // LegacyLoader loader to handle legacy data and ids
@@ -109,7 +111,8 @@ func (l *LegacyLoader) Load(data *Data) (err error) {
 			l.logger.Error("load all ids", zap.Error(err))
 		}
 
-		l.dataFilesLen = len(l.dataFNames) - 1
+		// PrepareNewBufFile supplies only sealed predecessors, never the active writer.
+		l.dataFilesLen = len(l.dataFNames)
 		l.dataFileIdx = -1
 		l.isNeedReload = false
 	}
@@ -134,6 +137,12 @@ READ_NEW_FILE:
 			return errors.Wrap(err, "open legacy data file")
 		}
 
+		if stat, statErr := l.dataFp.Stat(); statErr == nil && stat.Size() == 0 {
+			// A crash can leave an unused gzip segment with no header at all.
+			l.dataFp.Close()
+			l.dataFp = nil
+			goto READ_NEW_FILE
+		}
 		if l.decoder, err = NewDataDecoder(l.dataFp, isFileGZ(l.dataFp.Name())); err != nil {
 			l.dataFp.Close()
 			l.dataFp = nil
@@ -144,6 +153,13 @@ READ_NEW_FILE:
 
 READ_NEW_LINE:
 	if err = l.decoder.Read(data); err != nil {
+		if err != io.EOF && l.newestDataName() == l.dataFp.Name() && incompleteRecord(err) {
+			if preserveErr := preserveIncomplete(l.dataFp.Name()); preserveErr != nil {
+				return preserveErr
+			}
+			l.logger.Warn("recover complete records before interrupted final append", zap.Error(err), zap.String("file", l.dataFp.Name()))
+			err = io.EOF
+		}
 		if err != io.EOF {
 			// Corruption is not EOF. Retain the segment for repair/retry;
 			// silently skipping it would let the journal delete unread data.
@@ -172,8 +188,10 @@ READ_NEW_LINE:
 	return nil
 }
 
-// LoadMaxId load max id from all ids files
+// LoadMaxId includes sealed data as well as ACKs, without consuming either.
 func (l *LegacyLoader) LoadMaxId() (maxId int64, err error) {
+	l.RLock()
+	defer l.RUnlock()
 	l.logger.Debug("LoadMaxId...")
 	var (
 		fp         *os.File
@@ -204,6 +222,17 @@ func (l *LegacyLoader) LoadMaxId() (maxId int64, err error) {
 			continue
 		}
 
+		if id > maxId {
+			maxId = id
+		}
+	}
+
+	newest := l.newestDataName()
+	for _, fname := range l.dataFNames {
+		id, dataErr := maxDataID(fname, fname == newest)
+		if dataErr != nil {
+			return 0, dataErr
+		}
 		if id > maxId {
 			maxId = id
 		}
@@ -270,18 +299,105 @@ func (l *LegacyLoader) Clean() error {
 	l.Lock()
 	defer l.Unlock()
 
-	if len(l.dataFNames) > 1 {
-		l.removeFiles(l.dataFNames[:len(l.dataFNames)-1])
-		l.dataFNames = []string{l.dataFNames[len(l.dataFNames)-1]}
-	}
+	// All listed data files were consumed. The current writer is not in this
+	// snapshot, and the caller has already synchronized replacement copies.
+	l.removeFiles(l.dataFNames)
+	l.dataFNames = nil
 
 	if len(l.idsFNames) > 1 {
 		l.removeFiles(l.idsFNames[:len(l.idsFNames)-1])
 		l.idsFNames = []string{l.idsFNames[len(l.idsFNames)-1]}
 	}
 
-	l.dataFp.Close()
+	if l.dataFp != nil {
+		l.dataFp.Close()
+	}
 	l.dataFp = nil // `Load` need this
 	l.logger.Debug("clean all legacy files")
 	return nil
+}
+
+// maxDataID reads a sealed segment without consuming it or changing ACK state.
+// An unreadable record is not permission to allocate potentially colliding IDs.
+func maxDataID(name string, newest bool) (int64, error) {
+	fp, err := os.Open(name)
+	if err != nil {
+		return 0, errors.Wrap(err, "open recovery data")
+	}
+	defer fp.Close()
+	stat, err := fp.Stat()
+	if err != nil {
+		return 0, err
+	}
+	if stat.Size() == 0 {
+		return 0, nil
+	}
+	decoder, err := NewDataDecoder(fp, isFileGZ(name))
+	if err != nil {
+		return 0, errors.Wrap(err, "decode recovery data header")
+	}
+	var high int64
+	for {
+		d := &Data{}
+		if err := decoder.Read(d); err != nil {
+			if err == io.EOF {
+				return high, nil
+			}
+			if newest && incompleteRecord(err) {
+				if preserveErr := preserveIncomplete(name); preserveErr != nil {
+					return 0, preserveErr
+				}
+				Logger.Warn("incomplete final append retained for inspection", zap.String("file", name), zap.Error(err))
+				return high, nil
+			}
+			return 0, errors.Wrapf(err, "read recovery data %s", name)
+		}
+		if d.ID > high {
+			high = d.ID
+		}
+	}
+}
+
+// A torn append is only recoverable at the tail of the newest nonempty segment.
+// Invalid MessagePack types, gzip checksums and corruption in older segments
+// remain errors. No bytes are truncated or discarded during diagnosis.
+func incompleteRecord(err error) bool {
+	cause := msgp.Cause(err)
+	return cause == io.ErrUnexpectedEOF || (cause == io.EOF && err != io.EOF)
+}
+
+func (l *LegacyLoader) newestDataName() string {
+	for i := len(l.dataFNames) - 1; i >= 0; i-- {
+		info, err := os.Stat(l.dataFNames[i])
+		if err != nil {
+			return ""
+		}
+		if info.Size() != 0 {
+			return l.dataFNames[i]
+		}
+	}
+	return ""
+}
+
+// Hard-link the complete original segment before permitting prefix recovery.
+// Cleanup can unlink the WAL name only after replacements are synchronized;
+// this evidence name is never considered replayable input and is not removed.
+func preserveIncomplete(name string) error {
+	evidence := name + ".incomplete"
+	if err := os.Link(name, evidence); err != nil {
+		if !os.IsExist(err) {
+			return errors.Wrap(err, "retain interrupted append")
+		}
+		a, ae := os.Stat(name)
+		b, be := os.Stat(evidence)
+		if ae != nil || be != nil || !os.SameFile(a, b) {
+			return errors.New("interrupted append evidence path already belongs to another file")
+		}
+	}
+	dir, err := os.Open(filepath.Dir(name))
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	return dir.Sync()
 }

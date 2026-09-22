@@ -221,8 +221,10 @@ func (j *Journal) startRotateTrigger(ctx context.Context) {
 	}
 }
 
-// LoadMaxId load max id from journal ids files
+// LoadMaxId includes all retained data and acknowledgement records.
 func (j *Journal) LoadMaxId() (int64, error) {
+	j.RLock()
+	defer j.RUnlock()
 	return j.legacy.LoadMaxId()
 }
 
