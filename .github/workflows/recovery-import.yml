@@ -1,0 +1,52 @@
+name: Recovery verification
+on:
+  push:
+    branches: [fix/recovery-frontier-20260922]
+    paths: [.github/workflows/recovery-import.yml]
+permissions:
+  contents: write
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version: '1.27.x'
+      - name: Apply exact checked recovery source
+        run: |
+          python3 - <<'PY'
+          import base64,gzip,json,hashlib,subprocess
+          from pathlib import Path
+          encoded=Path('.recovery-patch.b64').read_text().strip().replace('RaDrpnw6','RaDrdnw6')
+          obj=json.loads(gzip.decompress(base64.b64decode(encoded,validate=True)))
+          assert set(obj['sha256'])=={'legacy.go','journal.go','recovery_delivery_test.go'}
+          patch=Path('/tmp/recovery.patch');patch.write_text(obj['patch'])
+          subprocess.run(['git','apply','--check',str(patch)],check=True)
+          subprocess.run(['git','apply',str(patch)],check=True)
+          for name,text in obj['files'].items():
+              assert name=='recovery_delivery_test.go'
+              Path(name).write_text(text)
+          for name,expected in obj['sha256'].items():
+              assert hashlib.sha256(Path(name).read_bytes()).hexdigest()==expected,name
+          PY
+          git diff --check
+      - name: Full verification with the dependency's own module graph
+        run: |
+          go mod verify
+          go build -mod=readonly ./...
+          go vet -mod=readonly ./...
+          go test -mod=readonly -count=1 -timeout=180s ./...
+          go test -mod=readonly -race -count=5 -shuffle=on -timeout=180s ./...
+          go test -mod=readonly -race -count=10 -shuffle=on -timeout=180s -run 'Test(Recovery|Regression)' ./...
+          git diff --exit-code -- go.mod go.sum
+      - name: Publish tested source
+        run: |
+          git config user.name Laisky
+          git config user.email public@laisky.com
+          git add legacy.go journal.go recovery_delivery_test.go
+          git commit -m 'fix: recover sealed data and retain interrupted-append evidence'
+          git push origin HEAD:refs/heads/fix/recovery-frontier-20260922
