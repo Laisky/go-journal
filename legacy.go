@@ -254,7 +254,7 @@ func (l *LegacyLoader) LoadAllids(ids Int64SetItf) (err error) {
 	l.logger.Debug("load all ids done",
 		zap.Float64("sec", utils.Clock.GetUTCNow().Sub(startTs).Seconds()))
 	if errMsg != "" {
-		return fmt.Errorf("load all ids: " + errMsg)
+		return fmt.Errorf("load all ids: %s", errMsg)
 	}
 
 	return nil
