@@ -95,16 +95,16 @@ func (s *Int64Set) Add(i int) {
 
 // AddInt64 add int64
 func (s *Int64Set) AddInt64(i int64) {
-	atomic.AddInt64(&s.n, 1)
-	s.d.Store(i, s.padding)
+	if _, loaded := s.d.LoadOrStore(i, s.padding); !loaded {
+		atomic.AddInt64(&s.n, 1)
+	}
 }
 
 // CheckAndRemove return true if exists
 func (s *Int64Set) CheckAndRemove(i int64) (ok bool) {
-	if _, ok = s.d.Load(i); ok {
+	if _, ok = s.d.LoadAndDelete(i); ok {
 		atomic.AddInt64(&s.n, -1)
 	}
-	s.d.Delete(i)
 	return ok
 }
 
@@ -118,6 +118,7 @@ type Int64SetWithTTL struct {
 	sync.RWMutex
 	chgLock  *sync.Mutex
 	stopChan chan struct{}
+	stopOnce sync.Once
 
 	ttl      time.Duration
 	ttlSec   int64
@@ -131,6 +132,9 @@ const (
 
 // NewInt64SetWithTTL create new int64 set with ttl
 func NewInt64SetWithTTL(ctx context.Context, ttl time.Duration) *Int64SetWithTTL {
+	if ttl <= 0 {
+		ttl = defaultIDSetTTL
+	}
 	if ttl < defaultIDSetTTL {
 		Logger.Warn("TTL too small")
 	}
@@ -193,8 +197,9 @@ func (s *Int64SetWithTTL) CheckAndRemove(id int64) (ok bool) {
 			}
 
 			// Logger.Debug("found in og, but expired")
-			s.og.Delete(id)
-			atomic.AddInt64(&s.ogN, -1)
+			if _, removed := s.og.LoadAndDelete(id); removed {
+				atomic.AddInt64(&s.ogN, -1)
+			}
 		}
 	}
 
@@ -211,27 +216,26 @@ func (s *Int64SetWithTTL) GetLen() (r int) {
 
 // Close close set, stop rotate
 func (s *Int64SetWithTTL) Close() {
-	s.stopChan <- struct{}{}
+	s.stopOnce.Do(func() { close(s.stopChan) })
 }
 
 // StartRotate start counter rotate
 func (s *Int64SetWithTTL) StartRotate(ctx context.Context) {
 	defer Logger.Info("StartRotate exit")
+	ticker := time.NewTicker(s.ttl)
+	defer ticker.Stop()
 	for {
 		select {
 		case <-s.stopChan:
 			return
 		case <-ctx.Done():
 			return
-		default:
+		case <-ticker.C:
+			s.Lock()
+			s.ogN, s.ngN = s.ngN, 0
+			s.og = s.ng
+			s.ng = &sync.Map{}
+			s.Unlock()
 		}
-
-		time.Sleep(s.ttl)
-		s.Lock()
-		Logger.Debug("rotate Int64SetWithTTL")
-		s.ogN, s.ngN = s.ngN, 0
-		s.og = s.ng
-		s.ng = &sync.Map{}
-		s.Unlock()
 	}
 }

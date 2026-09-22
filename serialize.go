@@ -161,7 +161,9 @@ func (enc *DataEncoder) Write(msg *Data) (err error) {
 	if err = msg.EncodeMsg(enc.writer); err != nil {
 		return errors.Wrap(err, "Encode journal data")
 	}
-	enc.writer.Flush()
+	if err = enc.writer.Flush(); err != nil {
+		return errors.Wrap(err, "flush journal record")
+	}
 	if enc.isCompress {
 		err = enc.gzWriter.WriteFooter()
 	}
@@ -217,6 +219,8 @@ func (enc *IdsEncoder) Write(id int64) (err error) {
 		return fmt.Errorf("id should bigger than 0, but got `%v`", id)
 	}
 
+	enc.Lock()
+	defer enc.Unlock()
 	var offset int64
 	if enc.baseID == -1 {
 		enc.baseID = id
@@ -226,12 +230,12 @@ func (enc *IdsEncoder) Write(id int64) (err error) {
 		offset = id - enc.baseID // offset
 	}
 
-	enc.Lock()
-	defer enc.Unlock()
 	if err = binary.Write(enc.writer, bitOrder, offset); err != nil {
 		return errors.Wrap(err, "write ids")
 	}
-	enc.writer.Flush()
+	if err = enc.writer.Flush(); err != nil {
+		return errors.Wrap(err, "flush journal record")
+	}
 	if enc.isCompress {
 		err = enc.gzWriter.WriteFooter()
 	}

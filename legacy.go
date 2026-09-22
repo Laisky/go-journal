@@ -207,7 +207,7 @@ func (l *LegacyLoader) LoadMaxId() (maxId int64, err error) {
 	l.logger.Debug("load max id done",
 		zap.Int64("max_id", maxId),
 		zap.Float64("sec", utils.Clock.GetUTCNow().Sub(startTs).Seconds()))
-	return id, nil
+	return maxId, nil
 }
 
 // LoadAllids read all ids from ids file into ids set
