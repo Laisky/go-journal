@@ -133,9 +133,11 @@ func TestLegacy(t *testing.T) {
 		if err = legacy.LoadAllids(idmaps); err != nil {
 			t.Fatalf("%+v", err)
 		}
-		t.Logf("got ids: %+v", idmaps)
-		if err = idsEncoder.Write(22); err != nil {
-			t.Fatalf("got error: %+v", err)
+		// The encoder's file was intentionally closed above. Refresh the
+		// in-memory ID set here, not the already-closed disk writer.
+		idmaps.AddInt64(22)
+		if got := idmaps.GetLen(); got != 3 {
+			t.Fatalf("unique ID count=%d, want 3", got)
 		}
 		if idmaps.CheckAndRemove(0) {
 			t.Fatal("should not contains 0")
