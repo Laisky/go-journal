@@ -68,7 +68,7 @@ func TestRegressionJournalPropagatesDataFlushError(t *testing.T) {
 		if err := enc.writer.WriteInt64(42); err != nil {
 			t.Fatal(err)
 		}
-		j := &Journal{dataEnc: enc}
+		j := &Journal{option: newOption(), dataEnc: enc}
 		if closeEncoder {
 			err = j.flushAndClose()
 		} else {
@@ -237,5 +237,37 @@ func TestRegressionConcurrentIDEncoder(t *testing.T) {
 		if !ids.CheckAndRemove(id) {
 			t.Errorf("ID %d lost/corrupted", id)
 		}
+	}
+}
+
+func TestRegressionLegacyCleanupRequiresSuccessfulFlush(t *testing.T) {
+	dir := t.TempDir()
+	old, current := filepath.Join(dir, "old.data"), filepath.Join(dir, "current.data")
+	for _, name := range []string{old, current} {
+		if err := os.WriteFile(name, []byte("retained"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	j, err := NewJournal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	j.legacy = &LegacyLoader{logger: Logger, ids: NewInt64Set(), dataFNames: []string{old, current}, dataFilesLen: 1, dataFileIdx: 0}
+	j.dataEnc, err = NewDataEncoder(regressionReadOnlyFile(t), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = j.dataEnc.writer.WriteInt64(42); err != nil {
+		t.Fatal(err)
+	}
+	if !j.LockLegacy() {
+		t.Fatal("cannot acquire legacy lock")
+	}
+	err = j.LoadLegacyBuf(&Data{})
+	if err == nil || err == io.EOF {
+		t.Errorf("failed durability barrier must be returned, got %v", err)
+	}
+	if _, err := os.Stat(old); err != nil {
+		t.Errorf("old durable copy was deleted before replacement flush succeeded: %v", err)
 	}
 }
