@@ -271,3 +271,29 @@ func TestRegressionLegacyCleanupRequiresSuccessfulFlush(t *testing.T) {
 		t.Errorf("old durable copy was deleted before replacement flush succeeded: %v", err)
 	}
 }
+
+func TestRegressionUnreadableLegacyIsNotEOF(t *testing.T) {
+	for _, missing := range []bool{false, true} {
+		t.Run(map[bool]string{false: "corrupt", true: "missing"}[missing], func(t *testing.T) {
+			dir := t.TempDir()
+			old, current := filepath.Join(dir, "old.buf"), filepath.Join(dir, "current.buf")
+			if !missing {
+				if err := os.WriteFile(old, []byte{0xc1}, 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.WriteFile(current, nil, 0600); err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			l := NewLegacyLoader(ctx, Logger, []string{old, current}, nil, false, time.Minute)
+			for attempt := 0; attempt < 2; attempt++ {
+				err := l.Load(&Data{})
+				if err == nil || err == io.EOF {
+					t.Errorf("attempt %d: unreadable segment treated as consumed: %v", attempt, err)
+				}
+			}
+		})
+	}
+}
