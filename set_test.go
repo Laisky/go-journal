@@ -5,6 +5,7 @@ import (
 	"math/rand"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/Laisky/go-utils"
@@ -87,43 +88,48 @@ func TestNewUint32Set(t *testing.T) {
 	}
 }
 
+// Virtual time keeps machine speed and race instrumentation out of the TTL contract.
 func TestValidateInt64SetWithTTL(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	s := NewInt64SetWithTTL(ctx, 1*time.Second)
-	wg := &sync.WaitGroup{}
-	pool := &sync.Map{}
-	padding := struct{}{}
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		s := NewInt64SetWithTTL(ctx, 1*time.Second)
+		defer s.Close()
+		synctest.Wait()
+		wg := &sync.WaitGroup{}
+		pool := &sync.Map{}
+		padding := struct{}{}
 
-	for nf := 0; nf < 4; nf++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			var n int64
-			for i := 0; i < 10000; i++ {
-				n = rand.Int63()
-				s.AddInt64(n)
-				pool.Store(n, padding)
+		for nf := 0; nf < 4; nf++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				var n int64
+				for i := 0; i < 10000; i++ {
+					n = rand.Int63()
+					s.AddInt64(n)
+					pool.Store(n, padding)
+				}
+			}()
+		}
+
+		wg.Wait()
+		pool.Range(func(k, v interface{}) bool {
+			if !s.CheckAndRemove(k.(int64)) {
+				t.Fatalf("should contains %d", k.(int64))
 			}
-		}()
-	}
+			return true
+		})
 
-	wg.Wait()
-	pool.Range(func(k, v interface{}) bool {
-		if !s.CheckAndRemove(k.(int64)) {
-			t.Fatalf("should contains %d", k.(int64))
-		}
-		return true
+		time.Sleep(1100 * time.Millisecond)
+		pool.Range(func(k, v interface{}) bool {
+			if s.CheckAndRemove(k.(int64)) {
+				t.Fatalf("should not contains %d", k.(int64))
+			}
+			return true
+		})
+
 	})
-
-	time.Sleep(1100 * time.Millisecond)
-	pool.Range(func(k, v interface{}) bool {
-		if s.CheckAndRemove(k.(int64)) {
-			t.Fatalf("should not contains %d", k.(int64))
-		}
-		return true
-	})
-
 }
 
 func ExampleInt64Set() {

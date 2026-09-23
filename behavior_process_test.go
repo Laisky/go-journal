@@ -16,7 +16,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"reflect"
-	"sort"
 	"strings"
 	"syscall"
 	"testing"
@@ -276,23 +275,12 @@ func TestBehaviorE2ECrashDelivery(t *testing.T) {
 						t.Fatalf("retained identity frontier regressed: %d", high)
 					}
 					r := c.ok(behaviorCommand{Op: "replay"})
-					got := map[int64]string{}
+					behaviorCheck(t, behaviorReconcile(behaviorPending(manifest, acked), r.Records))
 					for _, d := range r.Records {
-						if payload, ok := manifest[d.ID]; !ok || payload != d.Payload {
-							t.Fatalf("invented/corrupted event: %+v", d)
-						}
-						got[d.ID] = d.Payload
 						if d.ID%4 == 0 {
 							persist(d)
 							c.ok(behaviorCommand{Op: "ack", ID: d.ID})
 							acked[d.ID] = true
-						}
-					}
-					for id := range manifest {
-						if id%3 != 0 && !(id%4 == 0 && id <= int64(phase*16)) {
-							if _, ok := got[id]; !ok {
-								t.Fatalf("missing accepted event %d after crash", id)
-							}
 						}
 					}
 				}
@@ -301,6 +289,7 @@ func TestBehaviorE2ECrashDelivery(t *testing.T) {
 				c.kill()
 				c = behaviorWorker(t, dir, gz)
 				r := c.ok(behaviorCommand{Op: "replay"})
+				behaviorCheck(t, behaviorReconcile(behaviorPending(manifest, acked), r.Records))
 				for _, d := range r.Records {
 					if manifest[d.ID] != d.Payload {
 						t.Fatal("payload mismatch")
@@ -430,12 +419,57 @@ func TestBehaviorE2EEmptyCrashSegments(t *testing.T) {
 	}
 }
 
-// Keep serialization explicitly stable when test diagnostics enumerate records.
-func behaviorSortedIDs(m map[int64]string) []int64 {
-	out := make([]int64, 0, len(m))
-	for id := range m {
-		out = append(out, id)
+// This oracle is based only on the caller's manifest and completed durable ACKs.
+// Identical repeated delivery is permitted, but missing, invented and changed
+// records are not. The journal's private data structures are never consulted.
+func behaviorPending(manifest map[int64]string, acked map[int64]bool) map[int64]string {
+	want := make(map[int64]string)
+	for id, payload := range manifest {
+		if !acked[id] {
+			want[id] = payload
+		}
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
-	return out
+	return want
+}
+func behaviorReconcile(want map[int64]string, records []behaviorRecord) error {
+	seen := make(map[int64]bool)
+	for _, record := range records {
+		payload, exists := want[record.ID]
+		if !exists {
+			return fmt.Errorf("unexpected event %d", record.ID)
+		}
+		if payload != record.Payload {
+			return fmt.Errorf("changed event %d", record.ID)
+		}
+		seen[record.ID] = true
+	}
+	for id := range want {
+		if !seen[id] {
+			return fmt.Errorf("missing event %d", id)
+		}
+	}
+	return nil
+}
+func TestBehaviorDeliveryOracleRejectsFalseSuccess(t *testing.T) {
+	manifest := map[int64]string{1: "first", 2: "second", 3: "acked"}
+	want := behaviorPending(manifest, map[int64]bool{3: true})
+	for _, tc := range []struct {
+		name    string
+		records []behaviorRecord
+		valid   bool
+	}{
+		{"complete", []behaviorRecord{{1, "first"}, {2, "second"}}, true},
+		{"identical retry", []behaviorRecord{{1, "first"}, {2, "second"}, {1, "first"}}, true},
+		{"missing", []behaviorRecord{{1, "first"}}, false},
+		{"invented", []behaviorRecord{{1, "first"}, {2, "second"}, {4, "extra"}}, false},
+		{"corrupted", []behaviorRecord{{1, "wrong"}, {2, "second"}}, false},
+		{"identity collision", []behaviorRecord{{1, "first"}, {1, "second"}}, false},
+		{"settled ACK replayed", []behaviorRecord{{1, "first"}, {2, "second"}, {3, "acked"}}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := behaviorReconcile(want, tc.records); (err == nil) != tc.valid {
+				t.Fatalf("oracle accepted=%v want=%v: %v", err == nil, tc.valid, err)
+			}
+		})
+	}
 }
