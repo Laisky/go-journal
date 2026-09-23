@@ -59,6 +59,7 @@ type DataDecoder struct {
 type IdsEncoder struct {
 	BaseSerializer
 	baseID   int64
+	word     [8]byte // protected by the encoder mutex
 	writer   *bufio.Writer
 	gzWriter utils.CompressorItf
 }
@@ -67,6 +68,7 @@ type IdsEncoder struct {
 type IdsDecoder struct {
 	BaseSerializer
 	baseID   int64
+	word     [8]byte // decoder-local offset scratch space
 	reader   *bufio.Reader
 	gzReader io.Reader
 }
@@ -233,7 +235,8 @@ func (enc *IdsEncoder) Write(id int64) (err error) {
 		offset = id - enc.baseID // offset
 	}
 
-	if err = binary.Write(enc.writer, bitOrder, offset); err != nil {
+	bitOrder.PutUint64(enc.word[:], uint64(offset))
+	if _, err = enc.writer.Write(enc.word[:]); err != nil {
 		return errors.Wrap(err, "write ids")
 	}
 	if err = enc.writer.Flush(); err != nil {
@@ -279,11 +282,20 @@ func (enc *IdsEncoder) Close() (err error) {
 	return
 }
 
+// readOffset preserves EOF versus partial-record errors without allocating a
+// temporary byte slice for every acknowledgement.
+func (dec *IdsDecoder) readOffset() (int64, error) {
+	if _, err := io.ReadFull(dec.reader, dec.word[:]); err != nil {
+		return 0, err
+	}
+	return int64(bitOrder.Uint64(dec.word[:])), nil
+}
+
 // LoadMaxId load the maxium id in all files
 func (dec *IdsDecoder) LoadMaxId() (maxId int64, err error) {
 	var id int64
 	for {
-		if err = binary.Read(dec.reader, bitOrder, &id); err == io.EOF {
+		if id, err = dec.readOffset(); err == io.EOF {
 			break
 		} else if err != nil {
 			return 0, errors.Wrap(err, "read ids")
@@ -310,7 +322,7 @@ func (dec *IdsDecoder) ReadAllToBmap() (ids *roaring.Bitmap, err error) {
 	bitmap := roaring.New()
 	var id int64
 	for {
-		if err = binary.Read(dec.reader, bitOrder, &id); err == io.EOF {
+		if id, err = dec.readOffset(); err == io.EOF {
 			break
 		} else if err != nil {
 			return nil, errors.Wrap(err, "read ids")
@@ -336,7 +348,7 @@ func (dec *IdsDecoder) ReadAllToBmap() (ids *roaring.Bitmap, err error) {
 func (dec *IdsDecoder) ReadAllToInt64Set(ids Int64SetItf) (err error) {
 	var id int64
 	for {
-		if err = binary.Read(dec.reader, bitOrder, &id); err == io.EOF {
+		if id, err = dec.readOffset(); err == io.EOF {
 			break
 		} else if err != nil {
 			return errors.Wrap(err, "read ids")
