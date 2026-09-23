@@ -116,7 +116,6 @@ func (s *Int64Set) GetLen() int {
 // Int64SetWithTTL int64 set with TTL
 type Int64SetWithTTL struct {
 	sync.RWMutex
-	chgLock  *sync.Mutex
 	stopChan chan struct{}
 	stopOnce sync.Once
 
@@ -141,7 +140,6 @@ func NewInt64SetWithTTL(ctx context.Context, ttl time.Duration) *Int64SetWithTTL
 
 	s := &Int64SetWithTTL{
 		stopChan: make(chan struct{}),
-		chgLock:  &sync.Mutex{},
 		ttl:      ttl,
 		ttlSec:   int64(ttl.Seconds()),
 		ng:       &sync.Map{},
@@ -162,16 +160,10 @@ func (s *Int64SetWithTTL) Add(id int) {
 func (s *Int64SetWithTTL) AddInt64(id int64) {
 	t := utils.Clock.GetUTCNow().Unix() + s.ttlSec
 	s.RLock()
-	if _, ok := s.ng.LoadOrStore(id, t); !ok {
+	// Swap publishes a refreshed deadline in one map operation. The generation
+	// read lock prevents rotation until the unique-entry count is updated.
+	if _, loaded := s.ng.Swap(id, t); !loaded {
 		atomic.AddInt64(&s.ngN, 1)
-	} else { // already exists
-		s.chgLock.Lock()
-		if _, ok = s.ng.LoadOrStore(id, t); !ok {
-			atomic.AddInt64(&s.ngN, 1)
-		} else {
-			s.ng.Store(id, t)
-		}
-		s.chgLock.Unlock()
 	}
 	s.RUnlock()
 }
