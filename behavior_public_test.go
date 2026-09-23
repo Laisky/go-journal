@@ -59,8 +59,8 @@ func behaviorReplay(t *testing.T, j *journal.Journal) map[int64]*journal.Data {
 			break
 		}
 		behaviorCheck(t, err)
-		if _, ok := got[d.ID]; ok {
-			t.Fatalf("unexpected duplicate in a single sealed snapshot: %d", d.ID)
+		if prior, ok := got[d.ID]; ok && !reflect.DeepEqual(prior, d) {
+			t.Fatalf("retry changed payload for %d", d.ID)
 		}
 		got[d.ID] = d
 		// Transfer ownership to the active journal before allowing old-file cleanup.
@@ -512,5 +512,73 @@ func TestBehaviorCompressionCanChangeAcrossRestart(t *testing.T) {
 	j := behaviorStart(t, dir, false)
 	if got := behaviorReplay(t, j); !reflect.DeepEqual(got, want) {
 		t.Fatal("compression switch lost data")
+	}
+}
+
+// A caller may release the public replay lease to yield to writers, then resume.
+// Rotation must not reclaim a newly sealed segment that the old cursor never read.
+func TestBehaviorPausedReplayAndRotationPreserveAllMessages(t *testing.T) {
+	for _, gz := range []bool{false, true} {
+		t.Run(fmt.Sprint(gz), func(t *testing.T) {
+			dir := t.TempDir()
+			j := behaviorStart(t, dir, gz)
+			for _, id := range []int64{7, 8} {
+				behaviorCheck(t, j.WriteData(behaviorData(id)))
+			}
+			behaviorCheck(t, j.Sync())
+			j.Close()
+			j = behaviorStart(t, dir, gz)
+			if !j.LockLegacy() {
+				t.Fatal("replay lease unavailable")
+			}
+			var first journal.Data
+			behaviorCheck(t, j.LoadLegacyBuf(&first))
+			behaviorCheck(t, j.WriteData(&first))
+			j.UnLockLegacy() // Yield intentionally before EOF.
+			behaviorCheck(t, j.WriteData(behaviorData(9)))
+			behaviorCheck(t, j.Sync())
+			behaviorCheck(t, j.Rotate(context.Background()))
+			behaviorReplay(t, j) // Finish the resumed pass and its automatic cleanup.
+			j.Close()
+			j = behaviorStart(t, dir, gz)
+			got := behaviorReplay(t, j)
+			// Check after a fresh reopen, not just a bounded recovery wait: the old
+			// cursor previously allowed cleanup to unlink the only copy of event 9.
+			for _, id := range []int64{9, 7, 8} {
+				if !reflect.DeepEqual(got[id], behaviorData(id)) {
+					t.Fatalf("reclaim after paused replay lost event %d: %+v", id, got)
+				}
+			}
+		})
+	}
+}
+
+// ACK completion may be out of ID order. Reclaiming older segments must not
+// roll the recovered identity frontier back below an already completed event.
+func TestBehaviorReclaimPreservesIdentityFrontier(t *testing.T) {
+	for _, gz := range []bool{false, true} {
+		t.Run(fmt.Sprint(gz), func(t *testing.T) {
+			dir := t.TempDir()
+			j := behaviorStart(t, dir, gz)
+			behaviorCheck(t, j.WriteData(behaviorData(1000)))
+			behaviorCheck(t, j.WriteId(1000))
+			behaviorCheck(t, j.Sync())
+			behaviorCheck(t, j.Rotate(context.Background()))
+			behaviorCheck(t, j.WriteData(behaviorData(1)))
+			behaviorCheck(t, j.WriteId(1))
+			behaviorCheck(t, j.Sync())
+			j.Close()
+			j = behaviorStart(t, dir, gz)
+			if got := behaviorReplay(t, j); len(got) != 0 {
+				t.Fatalf("ACKed data replayed: %v", got)
+			}
+			j.Close()
+			j = behaviorStart(t, dir, gz)
+			high, err := j.LoadMaxId()
+			behaviorCheck(t, err)
+			if high != 1000 {
+				t.Fatalf("reclaim rolled identity frontier back: %d want 1000", high)
+			}
+		})
 	}
 }
