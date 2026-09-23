@@ -26,7 +26,7 @@ func behaviorNew(t *testing.T, dir string, compressed bool) *journal.Journal {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(j.Close)
+	t.Cleanup(func() { behaviorNoPanic(t, func() error { j.Close(); return nil }) })
 	return j
 }
 func behaviorStart(t *testing.T, dir string, compressed bool) *journal.Journal {
@@ -493,4 +493,24 @@ func FuzzBehaviorFileNames(f *testing.F) {
 			t.Fatalf("invalid generated path %q", got)
 		}
 	})
+}
+
+func TestBehaviorCompressionCanChangeAcrossRestart(t *testing.T) {
+	dir := t.TempDir()
+	want := map[int64]*journal.Data{}
+	for cycle, gz := range []bool{true, false, true, false} {
+		j := behaviorStart(t, dir, gz)
+		if got := behaviorReplay(t, j); !reflect.DeepEqual(got, want) {
+			t.Fatalf("cycle %d: existing data changed", cycle)
+		}
+		d := behaviorData(int64(cycle + 1))
+		behaviorCheck(t, j.WriteData(d))
+		want[d.ID] = d
+		behaviorCheck(t, j.Sync())
+		j.Close()
+	}
+	j := behaviorStart(t, dir, false)
+	if got := behaviorReplay(t, j); !reflect.DeepEqual(got, want) {
+		t.Fatal("compression switch lost data")
+	}
 }
