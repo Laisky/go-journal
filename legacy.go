@@ -70,6 +70,17 @@ func (l *LegacyLoader) Reset(dataFNames, idsFNames []string) {
 	l.logger.Debug("reset legacy loader",
 		zap.Strings("data_files", dataFNames),
 		zap.Strings("ids_files", idsFNames))
+	// A new snapshot invalidates a partially consumed cursor. Restarting the
+	// scan can repeat complete records, but must never delete an unread segment.
+	if l.dataFp != nil {
+		if err := l.dataFp.Close(); err != nil {
+			l.logger.Error("close reset replay reader", zap.Error(err))
+		}
+		l.dataFp = nil
+	}
+	l.decoder = nil
+	l.isNeedReload = true
+	l.dataFileIdx, l.dataFilesLen = -1, 0
 	l.dataFNames = dataFNames
 	l.idsFNames = idsFNames
 	l.isReadyReload = len(dataFNames) != 0 || len(idsFNames) != 0
@@ -280,14 +291,34 @@ func (l *LegacyLoader) Clean() error {
 		l.dataFp = nil
 	}
 	l.decoder = nil
+	// Out-of-order ACKs mean the newest file need not carry the largest ID.
+	// Keep that frontier's ACK file as well as the newest one, otherwise a
+	// fresh caller can reuse an identity already delivered before reclamation.
+	// Decode before removing anything: damaged ACKs are not cleanup permission.
+	var frontierName string
+	var frontier int64 = -1
+	for _, name := range l.idsFNames {
+		var maxID int64
+		if err := readIDsFile(name, func(dec *IdsDecoder) (err error) {
+			maxID, err = dec.LoadMaxId()
+			return err
+		}); err != nil {
+			return err
+		}
+		if maxID > frontier {
+			frontier, frontierName = maxID, name
+		}
+	}
+	var oldIDs, retainedIDs []string
+	for idx, name := range l.idsFNames {
+		if idx == len(l.idsFNames)-1 || name == frontierName {
+			retainedIDs = append(retainedIDs, name)
+		} else {
+			oldIDs = append(oldIDs, name)
+		}
+	}
 	if err := l.removeFiles(l.dataFNames); err != nil {
 		return err
-	}
-	oldIDs := l.idsFNames
-	if len(oldIDs) > 1 {
-		oldIDs = oldIDs[:len(oldIDs)-1]
-	} else {
-		oldIDs = nil
 	}
 	// Preserve all ACK files while a data cleanup is still incomplete.
 	if err := l.removeFiles(oldIDs); err != nil {
@@ -315,9 +346,7 @@ func (l *LegacyLoader) Clean() error {
 	}
 	// Clear the retry ledger only after all removals and directory barriers pass.
 	l.dataFNames = nil
-	if len(l.idsFNames) > 1 {
-		l.idsFNames = l.idsFNames[len(l.idsFNames)-1:]
-	}
+	l.idsFNames = retainedIDs
 	return nil
 }
 
