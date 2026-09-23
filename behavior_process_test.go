@@ -5,6 +5,7 @@ package journal_test
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
@@ -326,6 +327,25 @@ func TestBehaviorE2ECrashDelivery(t *testing.T) {
 				behaviorCheck(t, scan.Err())
 				if !reflect.DeepEqual(received, manifest) {
 					t.Fatalf("sink received %d/%d unique events", len(received), len(manifest))
+				}
+				if root := os.Getenv("JOURNAL_BEHAVIOR_EVIDENCE"); root != "" {
+					behaviorCheck(t, os.MkdirAll(root, 0700))
+					dest, err := os.MkdirTemp(root, "delivery-")
+					behaviorCheck(t, err)
+					original, err := json.Marshal(manifest)
+					behaviorCheck(t, err)
+					ledger, err := os.ReadFile(sinkName)
+					behaviorCheck(t, err)
+					behaviorCheck(t, os.WriteFile(filepath.Join(dest, "manifest.json"), original, 0600))
+					behaviorCheck(t, os.WriteFile(filepath.Join(dest, "downstream.jsonl"), ledger, 0600))
+					metadata, err := json.Marshal(map[string]interface{}{
+						"test": t.Name(), "seed": seed, "gzip": gz,
+						"accepted_events": len(manifest), "restart_boundaries": 5,
+						"manifest_sha256": fmt.Sprintf("%x", sha256.Sum256(original)),
+						"ledger_sha256":   fmt.Sprintf("%x", sha256.Sum256(ledger)),
+					})
+					behaviorCheck(t, err)
+					behaviorCheck(t, os.WriteFile(filepath.Join(dest, "metadata.json"), metadata, 0600))
 				}
 				t.Logf("48 caller events, exact sink reconciliation, 5 SIGKILL/reopen boundaries; seed=%d gzip=%v", seed, gz)
 			})

@@ -90,6 +90,10 @@ Bitmap decoding explicitly rejects IDs outside the bitmap's uint32 domain.
 The uint32 set distinguishes zero from MaxUint32. Two-generation TTL retention
 is retained, but deadline precision is nanoseconds rather than whole seconds.
 
+Set `JOURNAL_BEHAVIOR_EVIDENCE` to retain each crash-delivery cohort's original
+manifest, synchronized sink ledger, seed, compression mode and SHA-256 hashes.
+The behavioral CI enables this and uploads the files even when a later gate fails.
+
 ## Red/green verification
 
 `.scripts/verify_behavior_regressions.py` copies the same public test files onto
