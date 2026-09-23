@@ -72,6 +72,7 @@ func TestBehaviorProcessHelper(t *testing.T) {
 	}
 	defer j.Close()
 	reply(behaviorReply{})
+	var savedFileLimit *syscall.Rlimit
 	scanner := bufio.NewScanner(os.Stdin)
 	scanner.Buffer(make([]byte, 4096), 8<<20)
 	for scanner.Scan() {
@@ -85,6 +86,25 @@ func TestBehaviorProcessHelper(t *testing.T) {
 			err = j.WriteData(&journal.Data{ID: cmd.ID, Data: map[string]interface{}{"payload": cmd.Payload}})
 			if err == nil {
 				err = j.Sync()
+			}
+		case "reject":
+			err = j.WriteData(&journal.Data{ID: cmd.ID, Data: map[string]interface{}{"payload": []interface{}{cmd.Payload, make(chan int)}}})
+		case "sync":
+			err = j.Sync()
+		case "softFileLimit":
+			var limit syscall.Rlimit
+			err = syscall.Getrlimit(syscall.RLIMIT_FSIZE, &limit)
+			if err == nil {
+				original := limit
+				savedFileLimit = &original
+				limit.Cur = cmd.Limit
+				err = syscall.Setrlimit(syscall.RLIMIT_FSIZE, &limit)
+			}
+		case "restoreFileLimit":
+			if savedFileLimit == nil {
+				err = fmt.Errorf("no saved file-size limit")
+			} else {
+				err = syscall.Setrlimit(syscall.RLIMIT_FSIZE, savedFileLimit)
 			}
 		case "ack":
 			err = j.WriteId(cmd.ID)
