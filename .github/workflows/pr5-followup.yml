@@ -1,0 +1,61 @@
+name: Rejected payload and append safety
+
+on:
+  pull_request:
+    branches: [master]
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: journal-append-safety-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contracts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GOTOOLCHAIN: local
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version: '1.27.x'
+      - name: Record source and storage environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          git rev-parse HEAD HEAD^{tree} | tee evidence/source.txt
+          go version | tee evidence/toolchain.txt
+          go env > evidence/go-env.txt
+          uname -a > evidence/kernel.txt
+          lscpu > evidence/cpu.txt
+          findmnt -T . > evidence/filesystem.txt
+          go mod verify
+      - name: Repeated public contracts and real process faults
+        shell: bash
+        env:
+          JOURNAL_BEHAVIOR_EVIDENCE: ${{ github.workspace }}/evidence/ledgers
+        run: |
+          set -euo pipefail
+          go test -mod=readonly -json -race -count=10 -shuffle=on -timeout=180s -run '^TestUser' ./... | tee evidence/focused-race.jsonl
+      - name: Identical before-after tests and six paired cost samples
+        run: python3 .scripts/verify_pr5_regressions.py --artifacts evidence/red-green --benchmark-pairs 6
+      - name: Dependency integrity
+        run: git diff --exit-code -- go.mod go.sum
+      - name: Retain outcomes including failures
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: journal-append-safety-${{ github.sha }}
+          path: evidence/
+          if-no-files-found: error
+          retention-days: 14
