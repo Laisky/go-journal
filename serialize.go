@@ -34,7 +34,7 @@ const (
 	// Individual records may still exceed this size.
 	readBufferSize = 64 << 10
 	// Bound idle scratch retention, not the maximum accepted record size.
-	maxRetainedRecordBuffer = 64 << 10
+	maxRetainedRecordBuffer = 128 << 10
 )
 
 // BaseSerializer base serializer
