@@ -1,0 +1,61 @@
+name: Public behavior and crash recovery
+
+on:
+  pull_request:
+    branches: [master]
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: journal-behavior-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contracts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      JOURNAL_BEHAVIOR_EVIDENCE: ${{ github.workspace }}/evidence/ledgers
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version: '1.27.x'
+      - name: Native module graph and public behavior
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          go version | tee evidence/toolchain.txt
+          go mod verify
+          go build -mod=readonly ./...
+          go vet -mod=readonly ./...
+          go test -mod=readonly -json -count=1 -timeout=180s -coverprofile=evidence/coverage.out ./... | tee evidence/full.jsonl
+      - name: Repeated whole-suite race and real process crashes
+        shell: bash
+        run: |
+          set -euo pipefail
+          go test -mod=readonly -json -race -count=5 -shuffle=on -timeout=180s ./... | tee evidence/race.jsonl
+      - name: Baseline failures and independent passing controls
+        run: python3 .scripts/verify_behavior_regressions.py --artifacts evidence/red-green
+      - name: Bounded malformed-filename fuzzing
+        shell: bash
+        run: |
+          set -euo pipefail
+          go test -mod=readonly -run '^$' -fuzz '^FuzzBehaviorFileNames$' -fuzztime=15s -parallel=2 . | tee evidence/fuzz.txt
+          git diff --exit-code -- go.mod go.sum
+      - name: Retain outcomes, including failures
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: journal-behavior-${{ github.sha }}
+          path: evidence/
+          if-no-files-found: error
+          retention-days: 14

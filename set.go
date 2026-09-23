@@ -7,7 +7,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/Laisky/go-utils"
 	"github.com/Laisky/zap"
 	"github.com/RoaringBitmap/roaring"
 )
@@ -40,14 +39,14 @@ func NewUint32Set() *Uint32Set {
 // AddInt64 add new number
 func (s *Uint32Set) AddInt64(i int64) {
 	s.Lock()
-	s.d.Add(uint32(i % math.MaxUint32))
+	s.d.Add(uint32(i))
 	s.Unlock()
 }
 
 // CheckAndRemoveInt64 return true if exists
 func (s *Uint32Set) CheckAndRemoveInt64(i int64) (ok bool) {
 	s.Lock()
-	ok = s.d.CheckedRemove(uint32(i % math.MaxUint32))
+	ok = s.d.CheckedRemove(uint32(i))
 	s.Unlock()
 	return ok
 }
@@ -69,6 +68,8 @@ func (s *Uint32Set) CheckAndRemoveUint32(i uint32) (ok bool) {
 
 // GetLen return length
 func (s *Uint32Set) GetLen() int {
+	s.Lock()
+	defer s.Unlock()
 	return int(s.d.GetCardinality())
 }
 
@@ -120,7 +121,7 @@ type Int64SetWithTTL struct {
 	stopOnce sync.Once
 
 	ttl      time.Duration
-	ttlSec   int64
+	ttlNanos int64
 	og, ng   *sync.Map
 	ogN, ngN int64 // {msgid: time}
 }
@@ -141,7 +142,7 @@ func NewInt64SetWithTTL(ctx context.Context, ttl time.Duration) *Int64SetWithTTL
 	s := &Int64SetWithTTL{
 		stopChan: make(chan struct{}),
 		ttl:      ttl,
-		ttlSec:   int64(ttl.Seconds()),
+		ttlNanos: int64(ttl),
 		ng:       &sync.Map{},
 	}
 	Logger.Debug("NewInt64SetWithTTL",
@@ -158,7 +159,14 @@ func (s *Int64SetWithTTL) Add(id int) {
 
 // AddInt64 add int64
 func (s *Int64SetWithTTL) AddInt64(id int64) {
-	t := utils.Clock.GetUTCNow().Unix() + s.ttlSec
+	t := time.Now().UnixNano()
+	// Preserve fractional lifetimes. Saturation also avoids turning an extremely
+	// long positive lifetime into an already-expired negative deadline.
+	if s.ttlNanos > math.MaxInt64-t {
+		t = math.MaxInt64
+	} else {
+		t += s.ttlNanos
+	}
 	s.RLock()
 	// Swap publishes a refreshed deadline in one map operation. The generation
 	// read lock prevents rotation until the unique-entry count is updated.
@@ -173,7 +181,7 @@ func (s *Int64SetWithTTL) CheckAndRemove(id int64) (ok bool) {
 	s.RLock()
 	defer s.RUnlock()
 	var (
-		t  = utils.Clock.GetUTCNow().Unix()
+		t  = time.Now().UnixNano()
 		vi interface{}
 	)
 	if _, ok = s.ng.Load(id); ok {
