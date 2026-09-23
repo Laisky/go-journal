@@ -43,7 +43,7 @@ Sync and rotation on unusable objects return errors instead of panicking.
 | Highest ID ACKed in an older segment | Reclamation retains the recovered identity frontier | ReclaimPreservesIdentityFrontier |
 | Switch gzip/plain across restarts | Each old segment remains readable with its own encoding | CompressionCanChangeAcrossRestart |
 | ACK truncation/corruption, then repair | Neither a high-water result nor successful replay/EOF hides corruption; retry works | AcknowledgementCorruptionFailsClosedAndRetries, MalformedIDStreamIsRejected |
-| Old-file deletion refused, then repaired | Error is not reported as successful EOF; cleanup remains retryable | CleanupFailureIsNotEOF |
+| Old-file deletion refused, then repaired | Error is not reported as successful EOF; cleanup remains retryable | CleanupFailureIsNotEOF, CleanupRetryAfterPartialACKRemoval |
 | Replacement segment creation refused | Current writer remains usable; retrying rotation preserves both records | FailedRotationKeepsWriterUsable |
 | Concurrent write, ACK, Flush, Sync, Rotate | Race-free operations and exact recovered pending records | ConcurrentPublicOperations |
 | Duplicate owners in one/two processes | Second owner is refused; reopening after Close/SIGKILL succeeds | DirectoryHasSingleOwner, E2EProcessOwnership |
@@ -74,7 +74,8 @@ prevents inherited gzip suffixes from disagreeing with a new compression mode.
 
 ACK decoding errors are propagated rather than logged as success. Decoding is
 scoped to one descriptor at a time. Cleanup errors retain the retry ledger;
-data is removed before obsolete ACK files, with a directory Sync before cleanup
+the verified deletion plan survives partial ACK removals; data is removed before
+obsolete ACK files, with a directory Sync before cleanup
 is reported complete. The newest ACK file and the file containing the highest
 ACK are retained (at most two) so out-of-order completion cannot lower the
 identity frontier. This requires reading ACK metadata during cleanup; it is a
@@ -98,9 +99,9 @@ The behavioral CI enables this and uploads the files even when a later gate fail
 
 `.scripts/verify_behavior_regressions.py` copies the same public test files onto
 baseline `979ec19dde737bb4fec9ada2e39a99267c028706`, compiles both revisions, and
-requires **20 named failures** on the baseline, **three independent controls**
-passing on both, and all 23 cases passing on the candidate. A baseline test may
-contain several subcases; 20 is not a claim of 20 distinct root causes.
+requires **21 named failures** on the baseline, **three independent controls**
+passing on both, and all 24 cases passing on the candidate. A baseline test may
+contain several subcases; 21 is not a claim of 21 distinct root causes.
 Compilation errors, skipped tests and timeouts do not count as reproductions.
 The old failed-rotation path can panic in its already-running flush worker;
 that specific compiled execution and stack are recorded as a runtime failure.
@@ -108,7 +109,9 @@ that specific compiled execution and stack are recorded as a runtime failure.
 An existing 40,000-entry TTL test relied on finishing all concurrent setup within
 one wall-clock second. Race instrumentation exposed that assumption. It now uses
 `testing/synctest`, retaining the original lifetime/expiration assertions while
-removing machine speed from the contract. Fixture compilation mistakes and this
+removing machine speed from the contract. A later candidate-level regression also caught re-reading ACK paths already
+deleted by a partially failed cleanup. The verified deletion plan now persists
+until the cleanup and directory barriers succeed. Fixture compilation mistakes and this
 timing correction are not counted as newly discovered production defects.
 
 ## Commands and validation boundary

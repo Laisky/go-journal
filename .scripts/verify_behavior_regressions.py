@@ -16,6 +16,7 @@ import tempfile
 
 BASELINE = "979ec19dde737bb4fec9ada2e39a99267c028706"
 FAILURES = [
+    "TestBehaviorCleanupRetryAfterPartialACKRemoval",
     "TestBehaviorPausedReplayAndRotationPreserveAllMessages",
     "TestBehaviorReclaimPreservesIdentityFrontier",
     "TestBehaviorCanceledStartCanRetry",
