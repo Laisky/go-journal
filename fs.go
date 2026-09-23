@@ -23,9 +23,9 @@ import (
 
 var (
 	// dataFileNameReg journal data file name pattern
-	dataFileNameReg = regexp.MustCompile(`^\d{8}_\d{8}\.buf(.gz)?$`)
+	dataFileNameReg = regexp.MustCompile(`^\d{8}_\d{8}\.buf(\.gz)?$`)
 	// idsFileNameReg journal id file name pattern
-	idsFileNameReg  = regexp.MustCompile(`^\d{8}_\d{8}\.ids(.gz)?$`)
+	idsFileNameReg  = regexp.MustCompile(`^\d{8}_\d{8}\.ids(\.gz)?$`)
 	fileGzSuffixReg = regexp.MustCompile(`\.gz$`)
 
 	defaultFileNameTimeLayout = "20060102"
@@ -67,8 +67,8 @@ type bufFileStat struct {
 }
 
 // PrepareNewBufFile create new data & id files, and update bufFileStat.
-// * if `isScan=true`, will scan directory to find existing buf files,
-//   then generate new buf files.
+//   - if `isScan=true`, will scan directory to find existing buf files,
+//     then generate new buf files.
 //
 // * if `isScan=false`, keep old buf files, directly generate new file without scan directory.
 func PrepareNewBufFile(dirPath string, oldFsStat *bufFileStat, isScan, isGz bool, sizeBytes int64) (fsStat *bufFileStat, err error) {
@@ -100,7 +100,7 @@ func PrepareNewBufFile(dirPath string, oldFsStat *bufFileStat, isScan, isGz bool
 			// macos fs bug, could get removed files
 			if _, err := os.Stat(absFname); os.IsNotExist(err) {
 				logger.Warn("file not exists", zap.String("fname", fname))
-				return nil, nil
+				return nil, errors.Wrapf(err, "journal directory changed while scanning %s", absFname)
 			}
 
 			if dataFileNameReg.MatchString(fname) {
@@ -153,6 +153,9 @@ func PrepareNewBufFile(dirPath string, oldFsStat *bufFileStat, isScan, isGz bool
 		}
 	}
 
+	// Compression belongs to this writer, not the predecessor filename.
+	latestDataFName = strings.TrimSuffix(latestDataFName, ".gz")
+	latestIDsFName = strings.TrimSuffix(latestIDsFName, ".gz")
 	if isGz {
 		latestDataFName = appendGzSuffix(latestDataFName)
 		latestIDsFName = appendGzSuffix(latestIDsFName)
@@ -163,6 +166,8 @@ func PrepareNewBufFile(dirPath string, oldFsStat *bufFileStat, isScan, isGz bool
 	}
 
 	if fsStat.NewIDsFp, err = OpenBufFile(filepath.Join(dirPath, latestIDsFName), 0); err != nil {
+		fsStat.NewDataFp.Close()
+		os.Remove(fsStat.NewDataFp.Name()) // created exclusively by this attempt
 		return nil, err
 	}
 
@@ -185,12 +190,14 @@ func OpenBufFile(filepath string, preallocateBytes int64) (fp *os.File, err erro
 	Logger.Debug("create file with preallocate",
 		zap.Int64("preallocate", preallocateBytes),
 		zap.String("file", filepath))
-	if fp, err = os.OpenFile(filepath, os.O_RDWR|os.O_CREATE, FileMode); err != nil {
+	if fp, err = os.OpenFile(filepath, os.O_RDWR|os.O_CREATE|os.O_EXCL, FileMode); err != nil {
 		return nil, errors.Wrapf(err, "open file: %+v", filepath)
 	}
 
 	if preallocateBytes != 0 {
 		if err = fileutil.Preallocate(fp, preallocateBytes, false); err != nil {
+			fp.Close()
+			os.Remove(filepath) // created exclusively by this attempt
 			return nil, errors.Wrapf(err, "tpreallocate file bytes `%d`", preallocateBytes)
 		}
 	}
@@ -202,6 +209,9 @@ func OpenBufFile(filepath string, preallocateBytes int64) (fp *os.File, err erro
 // file name looks like `yyyymmddnnnn.ids`, nnnn begin from 0001 for each day
 func GenerateNewBufFName(now time.Time, oldFName string) (string, error) {
 	Logger.Debug("GenerateNewBufFName", zap.Time("now", now), zap.String("oldFName", oldFName))
+	if !dataFileNameReg.MatchString(oldFName) && !idsFileNameReg.MatchString(oldFName) {
+		return oldFName, fmt.Errorf("invalid journal filename %q", oldFName)
+	}
 	finfo := strings.SplitN(oldFName, ".", 2) // {name, ext}
 	if len(finfo) < 2 {
 		return oldFName, fmt.Errorf("oldFname `%s` not correct", oldFName)
@@ -210,7 +220,7 @@ func GenerateNewBufFName(now time.Time, oldFName string) (string, error) {
 	fts := finfo[0][:8]
 	fidx := finfo[0][9:]
 	fext := strings.ToLower(finfo[1])
-	if now.Format(defaultFileNameTimeLayout) != fts {
+	if now.Format(defaultFileNameTimeLayout) > fts {
 		return now.Format(defaultFileNameTimeLayout) + "_00000001." + fext, nil
 	}
 
@@ -219,5 +229,8 @@ func GenerateNewBufFName(now time.Time, oldFName string) (string, error) {
 		return oldFName, errors.Wrapf(err, "parse buf file's idx `%s` got error", fidx)
 	}
 
+	if idx == 99999999 {
+		return oldFName, fmt.Errorf("journal filename sequence exhausted: %s", oldFName)
+	}
 	return fmt.Sprintf("%s_%08d.%s", fts, idx+1, fext), nil
 }
