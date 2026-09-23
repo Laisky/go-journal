@@ -7,6 +7,7 @@ fp -> gzReader -> reader
 
 import (
 	"bufio"
+	"bytes"
 	"compress/gzip"
 	"encoding/binary"
 	"fmt"
@@ -32,6 +33,8 @@ const (
 	// Readers need bounded lookahead, not the 4 MiB writer/compressor buffer.
 	// Individual records may still exceed this size.
 	readBufferSize = 64 << 10
+	// Bound idle scratch retention, not the maximum accepted record size.
+	maxRetainedRecordBuffer = 64 << 10
 )
 
 // BaseSerializer base serializer
@@ -46,6 +49,8 @@ type DataEncoder struct {
 	// writeChan chan interface{}
 	writer   *msgp.Writer
 	gzWriter utils.CompressorItf
+	record   bytes.Buffer // scratch owned by the encoder mutex
+	writeErr error        // an incomplete live append must not accept a later record
 }
 
 // DataDecoder data deserializer
@@ -166,64 +171,99 @@ func NewDataDecoder(fp *os.File, isCompress bool) (decoder *DataDecoder, err err
 	return decoder, err
 }
 
-// Write serialize data info fp
-func (enc *DataEncoder) Write(msg *Data) (err error) {
+// Write serializes a complete record before touching the live stream. Encoding
+// rejection is retryable; an I/O failure after append begins poisons this encoder.
+func (enc *DataEncoder) Write(msg *Data) error {
 	enc.Lock()
 	defer enc.Unlock()
 	if enc.writer == nil {
 		return os.ErrClosed
+	}
+	if enc.writeErr != nil {
+		return enc.writeErr
 	}
 	if msg == nil || msg.ID < 0 {
 		return errors.New("data must be non-nil with a nonnegative ID")
 	}
-	if err = msg.EncodeMsg(enc.writer); err != nil {
-		return errors.Wrap(err, "Encode journal data")
+	enc.record.Reset()
+	defer func() {
+		if enc.record.Cap() > maxRetainedRecordBuffer {
+			enc.record = bytes.Buffer{}
+		} else {
+			enc.record.Reset()
+		}
+	}()
+	// Keep EncodeMsg semantics (including Encodable-only values), invoke custom
+	// encoders exactly once, and discard all staged bytes when serialization fails.
+	if err := msgp.Encode(&enc.record, msg); err != nil {
+		return errors.Wrap(err, "encode journal data")
+	}
+	n, err := enc.writer.Write(enc.record.Bytes())
+	if err == nil && n != enc.record.Len() {
+		err = io.ErrShortWrite
+	}
+	if err != nil {
+		enc.writeErr = errors.Wrap(err, "append journal record")
+		return enc.writeErr
 	}
 	if err = enc.writer.Flush(); err != nil {
-		return errors.Wrap(err, "flush journal record")
+		enc.writeErr = errors.Wrap(err, "flush journal record")
+		return enc.writeErr
 	}
 	if enc.isCompress {
-		err = enc.gzWriter.WriteFooter()
+		if err = enc.gzWriter.WriteFooter(); err != nil {
+			enc.writeErr = errors.Wrap(err, "finish journal record")
+			return enc.writeErr
+		}
 	}
-
-	return
+	return nil
 }
 
-// Flush flush buf to fp
-func (enc *DataEncoder) Flush() (err error) {
+// Flush flushes encoded bytes, but cannot certify an already damaged stream.
+func (enc *DataEncoder) Flush() error {
 	enc.Lock()
 	defer enc.Unlock()
 	if enc.writer == nil {
 		return os.ErrClosed
 	}
-	if err = enc.writer.Flush(); err != nil {
-		return errors.Wrap(err, "flush data encoder")
+	if enc.writeErr != nil {
+		return enc.writeErr
+	}
+	if err := enc.writer.Flush(); err != nil {
+		enc.writeErr = errors.Wrap(err, "flush data encoder")
+		return enc.writeErr
 	}
 	if enc.isCompress {
-		if err = enc.gzWriter.Flush(); err != nil {
-			return errors.Wrap(err, "flush data encoder gz")
+		if err := enc.gzWriter.Flush(); err != nil {
+			enc.writeErr = errors.Wrap(err, "flush data encoder gz")
+			return enc.writeErr
 		}
 	}
-	return
+	return nil
 }
 
-// Close close data gzip writer
-func (enc *DataEncoder) Close() (err error) {
+// Close releases scratch state and never flushes a known incomplete append.
+func (enc *DataEncoder) Close() error {
 	enc.Lock()
 	defer enc.Unlock()
 	if enc.writer == nil {
-		return nil
+		return enc.writeErr
 	}
-	if err = enc.writer.Flush(); err != nil {
-		return errors.Wrap(err, "flush data encoder")
+	defer func() { enc.writer = nil; enc.record = bytes.Buffer{} }()
+	if enc.writeErr != nil {
+		return enc.writeErr
+	}
+	if err := enc.writer.Flush(); err != nil {
+		enc.writeErr = errors.Wrap(err, "flush data encoder")
+		return enc.writeErr
 	}
 	if enc.isCompress {
-		if err = enc.gzWriter.Flush(); err != nil {
-			return errors.Wrap(err, "close data gz encoder")
+		if err := enc.gzWriter.Flush(); err != nil {
+			enc.writeErr = errors.Wrap(err, "close data gz encoder")
+			return enc.writeErr
 		}
 	}
-	enc.writer = nil
-	return
+	return nil
 }
 
 // Read deserialize data from fp
