@@ -171,6 +171,9 @@ func (j *Journal) Flush() error {
 		return os.ErrClosed
 	default:
 	}
+	if j.dataEnc == nil && j.idsEnc == nil {
+		return ErrNotStarted
+	}
 	return j.flushLocked()
 }
 
