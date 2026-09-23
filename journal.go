@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -35,6 +36,7 @@ type Journal struct {
 	lifecycleMu            sync.Mutex
 	workers                sync.WaitGroup
 	started                bool
+	dirLock                *fileutil.LockedFile
 	rotateLock, legacyLock *utils.Mutex
 	dataFp, idsFp          *os.File // current writting journal file
 	fsStat                 *bufFileStat
@@ -83,8 +85,20 @@ func (j *Journal) Start(ctx context.Context) (err error) {
 	if j.started {
 		return nil
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	// A directory is a single WAL ownership domain. Keep the lock inode after
+	// Close: unlinking it would let a third opener bypass an existing owner.
+	lock, err := fileutil.TryLockFile(filepath.Join(j.bufDirPath, ".journal.lock"), os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		return errors.Wrap(err, "lock journal directory")
+	}
+	j.dirLock = lock
 
 	if err = j.initBufDir(ctx); err != nil {
+		j.dirLock.Close()
+		j.dirLock = nil
 		return errors.Wrap(err, "init buf directory")
 	}
 
@@ -104,7 +118,7 @@ func (j *Journal) Close() {
 		j.workers.Wait()
 		j.Lock()
 		defer j.Unlock()
-		if err := j.Flush(); err != nil {
+		if err := j.flushLocked(); err != nil {
 			j.logger.Error("flush closing journal", zap.Error(err))
 		}
 		if j.dataFp != nil {
@@ -116,6 +130,13 @@ func (j *Journal) Close() {
 			j.idsFp = nil
 		}
 		j.dataEnc, j.idsEnc = nil, nil
+		if j.dirLock != nil {
+			j.dirLock.Close()
+			j.dirLock = nil
+		}
+		if j.legacy != nil {
+			j.legacy.closeReader()
+		}
 		if j.legacy != nil {
 			if closer, ok := j.legacy.ids.(interface{ Close() }); ok {
 				closer.Close()
@@ -138,7 +159,19 @@ func (j *Journal) initBufDir(ctx context.Context) (err error) {
 }
 
 // Flush flush journal files buffer to file
-func (j *Journal) Flush() (err error) {
+func (j *Journal) Flush() error {
+	j.Lock()
+	defer j.Unlock()
+	select {
+	case <-j.stopChan:
+		return os.ErrClosed
+	default:
+	}
+	return j.flushLocked()
+}
+
+// flushLocked is used only while holding the journal lock.
+func (j *Journal) flushLocked() (err error) {
 	if j.idsEnc != nil {
 		// j.logger.Debug("flush ids")
 		if err = j.idsEnc.Flush(); err != nil {
@@ -178,7 +211,7 @@ func (j *Journal) startFlushTrigger(ctx context.Context) {
 	j.logger.Info("start flush trigger", zap.Duration("interval", j.flushInterval))
 	defer j.logger.Info("journal flush exit")
 
-	defer func() { j.Lock(); defer j.Unlock(); j.Flush() }()
+	defer func() { j.Lock(); defer j.Unlock(); j.flushLocked() }()
 	var err error
 	ticker := time.NewTicker(j.flushInterval)
 	defer ticker.Stop()
@@ -190,7 +223,7 @@ func (j *Journal) startFlushTrigger(ctx context.Context) {
 			return
 		case <-ticker.C:
 			j.Lock()
-			if err = j.Flush(); err != nil {
+			if err = j.flushLocked(); err != nil {
 				j.logger.Error("flush journal", zap.Error(err))
 			}
 			j.Unlock()
@@ -225,6 +258,14 @@ func (j *Journal) startRotateTrigger(ctx context.Context) {
 func (j *Journal) LoadMaxId() (int64, error) {
 	j.RLock()
 	defer j.RUnlock()
+	select {
+	case <-j.stopChan:
+		return 0, os.ErrClosed
+	default:
+	}
+	if j.legacy == nil {
+		return 0, ErrNotStarted
+	}
 	return j.legacy.LoadMaxId()
 }
 
@@ -238,6 +279,12 @@ func (j *Journal) WriteData(data *Data) (err error) {
 	default:
 	}
 
+	if j.dataEnc == nil || j.legacy == nil {
+		return ErrNotStarted
+	}
+	if data == nil || data.ID < 0 {
+		return errors.New("data must be non-nil with a nonnegative ID")
+	}
 	if j.legacy.CheckAndRemove(data.ID) {
 		return
 	}
@@ -256,6 +303,9 @@ func (j *Journal) WriteId(id int64) error {
 	default:
 	}
 
+	if j.idsEnc == nil || j.legacy == nil {
+		return ErrNotStarted
+	}
 	if err := j.idsEnc.Write(id); err != nil {
 		return err
 	}
@@ -305,9 +355,9 @@ func (j *Journal) Rotate(ctx context.Context) (err error) {
 
 	select {
 	case <-j.stopChan:
-		return
+		return os.ErrClosed
 	case <-ctx.Done():
-		return
+		return ctx.Err()
 	default:
 	}
 
@@ -406,6 +456,11 @@ func (j *Journal) UnLockLegacy() bool {
 
 // GetMetric monitor inteface
 func (j *Journal) GetMetric() map[string]interface{} {
+	j.RLock()
+	defer j.RUnlock()
+	if j.legacy == nil {
+		return map[string]interface{}{"idsSetLen": 0}
+	}
 	return map[string]interface{}{
 		"idsSetLen": j.legacy.GetIdsLen(),
 	}
@@ -456,10 +511,13 @@ func (j *Journal) Sync() error {
 		return os.ErrClosed
 	default:
 	}
+	if j.dataEnc == nil || j.idsEnc == nil {
+		return ErrNotStarted
+	}
 	return j.syncLocked()
 }
 func (j *Journal) syncLocked() error {
-	if err := j.Flush(); err != nil {
+	if err := j.flushLocked(); err != nil {
 		return err
 	}
 	for _, fp := range []*os.File{j.dataFp, j.idsFp} {

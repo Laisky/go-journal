@@ -401,3 +401,14 @@ func preserveIncomplete(name string) error {
 	defer dir.Close()
 	return dir.Sync()
 }
+
+// closeReader releases a partially consumed replay stream during journal Close.
+func (l *LegacyLoader) closeReader() {
+	l.Lock()
+	defer l.Unlock()
+	if l.dataFp != nil {
+		l.dataFp.Close()
+		l.dataFp = nil
+	}
+	l.decoder = nil
+}
