@@ -482,7 +482,8 @@ func (j *Journal) LoadLegacyBuf(data *Data) (err error) {
 			return errors.Wrap(err, "sync replay before cleanup")
 		}
 		if err = j.legacy.Clean(); err != nil {
-			j.logger.Error("clean legacy", zap.Error(err))
+			j.UnLockLegacy()
+			return errors.Wrap(err, "clean legacy")
 		}
 
 		j.UnLockLegacy()

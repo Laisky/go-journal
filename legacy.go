@@ -2,7 +2,6 @@ package journal
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -44,7 +43,7 @@ func NewLegacyLoader(ctx context.Context,
 		dataFNames:    dataFNames,
 		idsFNames:     idsFNames,
 		isNeedReload:  true,
-		isReadyReload: len(dataFNames) != 0,
+		isReadyReload: len(dataFNames) != 0 || len(idsFNames) != 0,
 		isCompress:    isCompress,
 		ids:           NewInt64SetWithTTL(ctx, committedIDTTL),
 	}
@@ -73,7 +72,7 @@ func (l *LegacyLoader) Reset(dataFNames, idsFNames []string) {
 		zap.Strings("ids_files", idsFNames))
 	l.dataFNames = dataFNames
 	l.idsFNames = idsFNames
-	l.isReadyReload = len(dataFNames) != 0
+	l.isReadyReload = len(dataFNames) != 0 || len(idsFNames) != 0
 }
 
 // GetIdsLen return length of ids
@@ -81,24 +80,24 @@ func (l *LegacyLoader) GetIdsLen() int {
 	return l.ids.GetLen()
 }
 
-// removeFile delete file, should run sync to avoid dirty files
-func (l *LegacyLoader) removeFiles(fs []string) {
-	for _, fpath := range fs {
-		if err := os.Remove(fpath); err != nil {
-			l.logger.Error("delete file",
-				zap.String("file", fpath),
-				zap.Error(err))
-			continue
+// removeFiles retains failures for retry. A previously removed pathname is
+// harmless during retry; unrelated failures must not become a successful EOF.
+func (l *LegacyLoader) removeFiles(files []string) error {
+	for _, name := range files {
+		if err := os.Remove(name); err != nil && !os.IsNotExist(err) {
+			return errors.Wrapf(err, "remove legacy file %s", name)
 		}
-
-		l.logger.Info("remove file", zap.String("file", fpath))
 	}
+	return nil
 }
 
 // Load load data from legacy
 func (l *LegacyLoader) Load(data *Data) (err error) {
-	l.RLock()
-	defer l.RUnlock()
+	l.Lock()
+	defer l.Unlock()
+	if data == nil {
+		return errors.New("nil replay destination")
+	}
 
 	if l.isNeedReload {
 		// legacy files not prepared
@@ -106,10 +105,10 @@ func (l *LegacyLoader) Load(data *Data) (err error) {
 			return io.EOF
 		}
 
-		l.isReadyReload = false
-		if err = l.LoadAllids(l.ids); err != nil {
-			l.logger.Error("load all ids", zap.Error(err))
+		if err = l.loadAllIDs(l.ids); err != nil {
+			return errors.Wrap(err, "load acknowledgement snapshot")
 		}
+		l.isReadyReload = false
 
 		// PrepareNewBufFile supplies only sealed predecessors, never the active writer.
 		l.dataFilesLen = len(l.dataFNames)
@@ -193,35 +192,16 @@ func (l *LegacyLoader) LoadMaxId() (maxId int64, err error) {
 	l.RLock()
 	defer l.RUnlock()
 	l.logger.Debug("LoadMaxId...")
-	var (
-		fp         *os.File
-		id         int64
-		idsDecoder *IdsDecoder
-	)
 	startTs := utils.Clock.GetUTCNow()
-	for _, fname := range l.idsFNames {
-		// l.logger.Debug("load ids from file", zap.String("fname", fname))
-		if fp, err = os.Open(fname); err != nil {
-			return 0, errors.Wrapf(err, "open file `%s` to load maxid", fname)
+	for _, name := range l.idsFNames {
+		var id int64
+		if err := readIDsFile(name, func(dec *IdsDecoder) error {
+			var err error
+			id, err = dec.LoadMaxId()
+			return err
+		}); err != nil {
+			return 0, err
 		}
-		defer fp.Close()
-
-		if idsDecoder, err = NewIdsDecoder(fp, isFileGZ(fp.Name())); err != nil {
-			l.logger.Error("new ids decoder from file",
-				zap.Error(err),
-				zap.String("fname", fp.Name()),
-			)
-			continue
-		}
-
-		if id, err = idsDecoder.LoadMaxId(); err != nil {
-			l.logger.Error("read ids decoder",
-				zap.Error(err),
-				zap.String("fname", fp.Name()),
-			)
-			continue
-		}
-
 		if id > maxId {
 			maxId = id
 		}
@@ -245,52 +225,47 @@ func (l *LegacyLoader) LoadMaxId() (maxId int64, err error) {
 }
 
 // LoadAllids read all ids from ids file into ids set
-func (l *LegacyLoader) LoadAllids(ids Int64SetItf) (err error) {
-	l.logger.Debug("call LoadAllids")
-	var (
-		errMsg     string
-		fp         *os.File
-		idsDecoder *IdsDecoder
-	)
+func (l *LegacyLoader) LoadAllids(ids Int64SetItf) error {
+	l.RLock()
+	defer l.RUnlock()
+	return l.loadAllIDs(ids)
+}
 
-	startTs := utils.Clock.GetUTCNow()
-	for _, fname := range l.idsFNames {
-		// l.logger.Debug("load ids from file", zap.String("fname", fname))
-		if fp != nil {
-			if err = fp.Close(); err != nil {
-				l.logger.Error("close file", zap.String("file", fp.Name()), zap.Error(err))
-			}
-		}
-
-		fp, err = os.Open(fname)
-		if err != nil {
-			errMsg += errors.Wrapf(err, "open file `%s`", fname).Error() + ";"
-			continue
-		}
-
-		if idsDecoder, err = NewIdsDecoder(fp, isFileGZ(fp.Name())); err != nil {
-			errMsg += errors.Wrapf(err, "create ids decoder `%s`", fname).Error() + ";"
-			continue
-		}
-
-		if err = idsDecoder.ReadAllToInt64Set(ids); err != nil {
-			errMsg += errors.Wrapf(err, "load ids from `%s`", fname).Error() + ";"
-			continue
+func (l *LegacyLoader) loadAllIDs(ids Int64SetItf) error {
+	for _, name := range l.idsFNames {
+		if err := readIDsFile(name, func(dec *IdsDecoder) error { return dec.ReadAllToInt64Set(ids) }); err != nil {
+			return err
 		}
 	}
+	return nil
+}
 
-	if fp != nil {
-		if err = fp.Close(); err != nil {
-			l.logger.Error("close file", zap.String("file", fp.Name()), zap.Error(err))
+// Scope each descriptor to one file rather than deferring all closes until the
+// complete snapshot has been scanned. Unused zero-byte gzip files are valid.
+func readIDsFile(name string, consume func(*IdsDecoder) error) (err error) {
+	fp, err := os.Open(name)
+	if err != nil {
+		return errors.Wrap(err, "open acknowledgement file")
+	}
+	defer func() {
+		if closeErr := fp.Close(); err == nil && closeErr != nil {
+			err = closeErr
 		}
+	}()
+	info, err := fp.Stat()
+	if err != nil {
+		return err
 	}
-
-	l.logger.Debug("load all ids done",
-		zap.Float64("sec", utils.Clock.GetUTCNow().Sub(startTs).Seconds()))
-	if errMsg != "" {
-		return fmt.Errorf("load all ids: %s", errMsg)
+	if info.Size() == 0 {
+		return nil
 	}
-
+	dec, err := NewIdsDecoder(fp, isFileGZ(name))
+	if err != nil {
+		return errors.Wrapf(err, "decode acknowledgement header %s", name)
+	}
+	if err := consume(dec); err != nil {
+		return errors.Wrapf(err, "decode acknowledgement records %s", name)
+	}
 	return nil
 }
 
@@ -298,22 +273,51 @@ func (l *LegacyLoader) LoadAllids(ids Int64SetItf) (err error) {
 func (l *LegacyLoader) Clean() error {
 	l.Lock()
 	defer l.Unlock()
-
-	// All listed data files were consumed. The current writer is not in this
-	// snapshot, and the caller has already synchronized replacement copies.
-	l.removeFiles(l.dataFNames)
-	l.dataFNames = nil
-
-	if len(l.idsFNames) > 1 {
-		l.removeFiles(l.idsFNames[:len(l.idsFNames)-1])
-		l.idsFNames = []string{l.idsFNames[len(l.idsFNames)-1]}
-	}
-
 	if l.dataFp != nil {
-		l.dataFp.Close()
+		if err := l.dataFp.Close(); err != nil {
+			return err
+		}
+		l.dataFp = nil
 	}
-	l.dataFp = nil // `Load` need this
-	l.logger.Debug("clean all legacy files")
+	l.decoder = nil
+	if err := l.removeFiles(l.dataFNames); err != nil {
+		return err
+	}
+	oldIDs := l.idsFNames
+	if len(oldIDs) > 1 {
+		oldIDs = oldIDs[:len(oldIDs)-1]
+	} else {
+		oldIDs = nil
+	}
+	// Preserve all ACK files while a data cleanup is still incomplete.
+	if err := l.removeFiles(oldIDs); err != nil {
+		return err
+	}
+	dirs := make(map[string]struct{})
+	for _, files := range [][]string{l.dataFNames, oldIDs} {
+		for _, name := range files {
+			dirs[filepath.Dir(name)] = struct{}{}
+		}
+	}
+	for dir := range dirs {
+		fp, err := os.Open(dir)
+		if err != nil {
+			return err
+		}
+		err = fp.Sync()
+		closeErr := fp.Close()
+		if err != nil {
+			return errors.Wrap(err, "sync legacy cleanup")
+		}
+		if closeErr != nil {
+			return closeErr
+		}
+	}
+	// Clear the retry ledger only after all removals and directory barriers pass.
+	l.dataFNames = nil
+	if len(l.idsFNames) > 1 {
+		l.idsFNames = l.idsFNames[len(l.idsFNames)-1:]
+	}
 	return nil
 }
 
