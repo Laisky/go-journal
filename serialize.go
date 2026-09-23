@@ -11,6 +11,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"sync"
 
@@ -318,21 +319,34 @@ func (dec *IdsDecoder) readOffset() (int64, error) {
 	return int64(bitOrder.Uint64(dec.word[:])), nil
 }
 
+// readID validates the signed-delta stream before exposing an identity.
+func (dec *IdsDecoder) readID() (int64, error) {
+	id, err := dec.readOffset()
+	if err != nil {
+		return 0, err
+	}
+	if dec.baseID == -1 {
+		if id < 0 {
+			return 0, errors.New("negative acknowledgement base ID")
+		}
+		dec.baseID = id
+	} else {
+		id += dec.baseID
+		if id < 0 {
+			return 0, errors.New("acknowledgement ID underflow or overflow")
+		}
+	}
+	return id, nil
+}
+
 // LoadMaxId load the maxium id in all files
 func (dec *IdsDecoder) LoadMaxId() (maxId int64, err error) {
 	var id int64
 	for {
-		if id, err = dec.readOffset(); err == io.EOF {
+		if id, err = dec.readID(); err == io.EOF {
 			break
 		} else if err != nil {
 			return 0, errors.Wrap(err, "read ids")
-		}
-
-		if dec.baseID == -1 {
-			Logger.Debug("set baseID", zap.Int64("id", id))
-			dec.baseID = id
-		} else {
-			id += dec.baseID
 		}
 
 		// Logger.Debug("load new id", zap.Int64("id", id))
@@ -349,22 +363,16 @@ func (dec *IdsDecoder) ReadAllToBmap() (ids *roaring.Bitmap, err error) {
 	bitmap := roaring.New()
 	var id int64
 	for {
-		if id, err = dec.readOffset(); err == io.EOF {
+		if id, err = dec.readID(); err == io.EOF {
 			break
 		} else if err != nil {
 			return nil, errors.Wrap(err, "read ids")
 		}
 
-		if dec.baseID == -1 {
-			// first id in head of file is baseID
-			Logger.Debug("set baseID", zap.Int64("id", id))
-			dec.baseID = id
-		} else {
-			// another ids in rest file are offsets
-			id += dec.baseID
-		}
-
 		// Logger.Debug("load new id", zap.Int64("id", id))
+		if id > math.MaxUint32 {
+			return nil, errors.New("acknowledgement ID does not fit uint32 bitmap")
+		}
 		bitmap.AddInt(int(id))
 	}
 
@@ -375,19 +383,10 @@ func (dec *IdsDecoder) ReadAllToBmap() (ids *roaring.Bitmap, err error) {
 func (dec *IdsDecoder) ReadAllToInt64Set(ids Int64SetItf) (err error) {
 	var id int64
 	for {
-		if id, err = dec.readOffset(); err == io.EOF {
+		if id, err = dec.readID(); err == io.EOF {
 			break
 		} else if err != nil {
 			return errors.Wrap(err, "read ids")
-		}
-
-		if dec.baseID == -1 {
-			// first id in head of file is baseID
-			Logger.Debug("set baseID", zap.Int64("id", id))
-			dec.baseID = id
-		} else {
-			// another ids in rest file are offsets
-			id += dec.baseID
 		}
 
 		// Logger.Debug("load new id", zap.Int64("id", id))

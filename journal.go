@@ -93,11 +93,15 @@ func (j *Journal) Start(ctx context.Context) (err error) {
 	if err != nil {
 		return errors.Wrap(err, "lock journal directory")
 	}
+	j.Lock()
 	j.dirLock = lock
+	j.Unlock()
 
 	if err = j.initBufDir(ctx); err != nil {
+		j.Lock()
 		j.dirLock.Close()
 		j.dirLock = nil
+		j.Unlock()
 		return errors.Wrap(err, "init buf directory")
 	}
 
@@ -129,10 +133,6 @@ func (j *Journal) Close() {
 			j.idsFp = nil
 		}
 		j.dataEnc, j.idsEnc = nil, nil
-		if j.dirLock != nil {
-			j.dirLock.Close()
-			j.dirLock = nil
-		}
 		if j.legacy != nil {
 			j.legacy.closeReader()
 		}
@@ -141,6 +141,11 @@ func (j *Journal) Close() {
 				closer.Close()
 			}
 		}
+		if j.dirLock != nil {
+			j.dirLock.Close()
+			j.dirLock = nil
+		}
+
 	})
 }
 
@@ -432,6 +437,11 @@ func (j *Journal) refreshLegacyLoader(ctx context.Context) {
 
 // LockLegacy lock legacy to prevent rotate, clean
 func (j *Journal) LockLegacy() bool {
+	select {
+	case <-j.stopChan:
+		return false
+	default:
+	}
 	j.logger.Debug("call LockLegacy")
 	return j.legacyLock.TryLock()
 }
@@ -463,12 +473,23 @@ func (j *Journal) GetMetric() map[string]interface{} {
 // LoadLegacyBuf load legacy data one by one
 // ⚠️Warn: should call `j.LockLegacy()` before invoke this method
 func (j *Journal) LoadLegacyBuf(data *Data) (err error) {
+	select {
+	case <-j.stopChan:
+		return os.ErrClosed
+	default:
+	}
 	if !j.IsLegacyRunning() {
 		j.logger.Panic("should call `j.LockLegacy()` first")
 	}
 
 	j.Lock()
 	defer j.Unlock()
+	select {
+	case <-j.stopChan:
+		j.UnLockLegacy()
+		return os.ErrClosed
+	default:
+	}
 
 	if j.legacy == nil {
 		j.UnLockLegacy()
