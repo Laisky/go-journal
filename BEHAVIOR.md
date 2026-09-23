@@ -10,7 +10,7 @@ library and exchange commands over standard input/output.
 
 A caller-supplied identity is a nonnegative int64 and identifies immutable
 content. WriteData alone is not a durable receipt: a caller promising persistence
-must wait for a successful Sync. A write or Sync error has an unknown outcome;
+must wait for a successful Sync. A storage write or Sync error has an unknown outcome;
 it does not prove rollback or absence. Close remains an idempotent resource
 cleanup API, not a substitute for an error-checked Sync.
 
@@ -128,16 +128,69 @@ python3 .scripts/verify_behavior_regressions.py --artifacts /tmp/journal-red-gre
 go test -mod=readonly -run '^$' -fuzz '^FuzzBehaviorFileNames$' -fuzztime=15s -parallel=2 .
 ```
 
-**Local acceptance limitation (2026-09-23):** the available offline cache lacked
-several versions from this repository's own graph, including go-utils v1.12.9.
-Tests were executed with Go 1.27.1 and an external modfile based on go-fluentd's
-consumer graph (go-utils v1.14.6). The exact Linux files of directio v1.0.5 were
-provided through an external local replacement. The repository's go.mod and
-go.sum were not changed. Both red/green versions used the same external graph.
-This is valid consumer-graph evidence, **not standalone-module or hosted-CI
-acceptance**. The included read-only behavioral workflow is prepared to run the
-native graph; its results must be checked before merge. The supplied validation
-logs preserve the unavailable native-graph attempt as well as executed checks.
+**Dependency provenance:** the first #6 offline campaign used an external
+consumer graph because native versions were not cached. It was subsequently
+validated with the repository's original graph in Actions runs
+[35920736496](https://github.com/Laisky/go-journal/actions/runs/35920736496) and
+[35920736631](https://github.com/Laisky/go-journal/actions/runs/35920736631).
+The PR #5 follow-up also runs native Go 1.27.1 dependencies, including
+`go-utils v1.12.9`; no external modfile or local replacement is required and
+`go.mod`/`go.sum` are unchanged. The earlier consumer-graph results are historical
+and must not be substituted for the native workflow outcomes.
+
+## PR #5 follow-up: rejected payloads and damaged append streams
+
+A serialization rejection happens before any bytes are appended to the data
+stream. Later valid records remain recoverable, and a rejected ID can be retried
+with valid content. `DataEncoder` stages with the existing `EncodeMsg` interface,
+including Encodable-only values, rather than switching to an incompatible
+marshaling interface or invoking custom encoders twice. Custom encoders remain
+responsible for producing valid MessagePack when they report success.
+
+An I/O error after appending begins is different: persistence may be partial.
+The data encoder remembers append, flush and compression-finalization errors.
+Subsequent appends and durability barriers on that damaged stream return an
+error, even when the filesystem limit is repaired. Stop using that journal;
+Close it and reopen through the normal recovery protocol before submitting new
+records. This does not make failed disk writes atomic or silently repair
+arbitrary corruption. A separately failed file Sync still has an unknown
+outcome and must be handled by the caller.
+
+Public `Flush` before `Start` returns `ErrNotStarted`; internal cleanup remains
+nil-safe. The public `OpenBufFile` helper still opens or creates an existing file
+without truncating it; exclusive internal segment creation remains separate.
+After an exhausted replay snapshot's cleanup fails, a successful retry may go
+directly to EOF. The correct assertion is that cleanup completes and the
+transferred replacement survives reopening, not that the old record is replayed
+unnecessarily.
+
+The additional `TestUser` families preserve the original ACK damage/repair,
+codec migration, filename and lifecycle cases and add these external checks:
+
+| Journey | Assertion | TestUser family |
+|---|---|---|
+| Reject channel, nested or custom payload, then append | No rejected bytes reach the live file; valid successors and rejected-ID retry survive | InvalidPayloadDoesNotPoisonLaterAcceptedData |
+| Custom EncodeMsg-only payload | Exactly one callback; exact recovered value | CustomEncoderRemainsSupported |
+| Reject small and >5 MiB records, SIGKILL and reopen | Caller manifest and synchronized sink ledger agree after recovery and another crash/codec change | E2ERejectedPayloadCrashRecovery |
+| Kernel rejects a partial append; soft limit is restored | Further append and Sync still fail; synchronized prefix survives SIGKILL/reopen | E2EPartialAppendDoesNotAcceptLaterRecords |
+| Writers and maintenance overlap Close | Every successful Write+Sync receipt is recoverable; errors are checked | FlushConcurrentWithRotationAndClose |
+
+The new `.scripts/verify_pr5_regressions.py` uses the merged #6 master
+`2ad43212f66b3c04c64992940b7924288f1729f3` as its baseline. Four named cases must
+fail before and pass after; five independent controls must pass both versions.
+These are 18 outcomes, not 18 distinct defects. Compilation errors, panics,
+skips, race warnings and timeouts do not count as successful reproductions.
+The public helper and cleanup-oracle corrections are not production bug fixes.
+The old gzip partial-append path already failed closed and remains a control.
+
+```sh
+go test -mod=readonly -race -count=10 -shuffle=on -timeout=180s -run '^TestUser' ./...
+python3 .scripts/verify_pr5_regressions.py --artifacts /tmp/pr5-evidence --benchmark-pairs 6
+```
+
+The read-only append-safety workflow retains logs, test/binary hashes,
+source/storage metadata and paired benchmark results. See [PERFORMANCE.md](PERFORMANCE.md)
+for staging's memory cost and the measured scratch-reuse correction.
 
 No physical power loss, arbitrary filesystem corruption, all platforms, unlimited
 backlog or exactly-once delivery is claimed. SIGKILL leaves the OS page cache
