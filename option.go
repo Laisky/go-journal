@@ -70,6 +70,9 @@ func WithLogger(logger *utils.LoggerType) OptionFunc {
 
 func WithRotateDuration(d time.Duration) OptionFunc {
 	return func(o *option) error {
+		if d < 0 {
+			return fmt.Errorf("WithRotateDuration: duration cannot be negative")
+		}
 		if d == 0 {
 			Logger.Info("rewrite to default config", zap.Duration("rotateDuration", d))
 			return nil
@@ -85,6 +88,9 @@ func WithRotateDuration(d time.Duration) OptionFunc {
 
 func WithRotateCheckInterval(d time.Duration) OptionFunc {
 	return func(o *option) error {
+		if d < 0 {
+			return fmt.Errorf("WithRotateCheckInterval: duration cannot be negative")
+		}
 		if d == 0 {
 			Logger.Info("rewrite to default config", zap.Duration("rotateCheckInterval", d))
 			return nil
@@ -100,6 +106,9 @@ func WithRotateCheckInterval(d time.Duration) OptionFunc {
 
 func WithCommitIDTTL(d time.Duration) OptionFunc {
 	return func(o *option) error {
+		if d < 0 {
+			return fmt.Errorf("WithCommitIDTTL: duration cannot be negative")
+		}
 		if d == 0 {
 			Logger.Info("rewrite to default config", zap.Duration("committedIDTTL", d))
 			return nil
@@ -115,6 +124,9 @@ func WithCommitIDTTL(d time.Duration) OptionFunc {
 
 func WithFlushInterval(d time.Duration) OptionFunc {
 	return func(o *option) error {
+		if d < 0 {
+			return fmt.Errorf("WithFlushInterval: duration cannot be negative")
+		}
 		if d == 0 {
 			Logger.Info("rewrite to default config", zap.Duration("flushInterval", d))
 			return nil
@@ -161,6 +173,9 @@ func WithName(name string) OptionFunc {
 
 func WithBufSizeByte(bufSize int64) OptionFunc {
 	return func(o *option) (err error) {
+		if bufSize < 0 {
+			return fmt.Errorf("buffer size cannot be negative")
+		}
 		if bufSize == 0 {
 			Logger.Info("rewrite to default config", zap.Int64("bufSizeBytes", defaultBufSizeBytes))
 			return nil

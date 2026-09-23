@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -30,25 +31,25 @@ type Journal struct {
 	sync.RWMutex
 	*option
 
-	stopChan               chan struct{}
-	closeOnce              sync.Once
-	lifecycleMu            sync.Mutex
-	workers                sync.WaitGroup
-	started                bool
-	rotateLock, legacyLock *utils.Mutex
-	dataFp, idsFp          *os.File // current writting journal file
-	fsStat                 *bufFileStat
-	legacy                 *LegacyLoader
-	dataEnc                *DataEncoder
-	idsEnc                 *IdsEncoder
-	lastRotateAt           time.Time
+	stopChan      chan struct{}
+	closeOnce     sync.Once
+	lifecycleMu   sync.Mutex
+	workers       sync.WaitGroup
+	started       bool
+	dirLock       *fileutil.LockedFile
+	legacyLock    *utils.Mutex
+	dataFp, idsFp *os.File // current writting journal file
+	fsStat        *bufFileStat
+	legacy        *LegacyLoader
+	dataEnc       *DataEncoder
+	idsEnc        *IdsEncoder
+	lastRotateAt  time.Time
 }
 
 // NewJournal create new Journal
 func NewJournal(opts ...OptionFunc) (j *Journal, err error) {
 	j = &Journal{
 		stopChan:   make(chan struct{}),
-		rotateLock: utils.NewMutex(),
 		legacyLock: utils.NewMutex(),
 		option:     newOption(),
 	}
@@ -83,8 +84,24 @@ func (j *Journal) Start(ctx context.Context) (err error) {
 	if j.started {
 		return nil
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	// A directory is a single WAL ownership domain. Keep the lock inode after
+	// Close: unlinking it would let a third opener bypass an existing owner.
+	lock, err := fileutil.TryLockFile(filepath.Join(j.bufDirPath, ".journal.lock"), os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		return errors.Wrap(err, "lock journal directory")
+	}
+	j.Lock()
+	j.dirLock = lock
+	j.Unlock()
 
 	if err = j.initBufDir(ctx); err != nil {
+		j.Lock()
+		j.dirLock.Close()
+		j.dirLock = nil
+		j.Unlock()
 		return errors.Wrap(err, "init buf directory")
 	}
 
@@ -104,7 +121,7 @@ func (j *Journal) Close() {
 		j.workers.Wait()
 		j.Lock()
 		defer j.Unlock()
-		if err := j.Flush(); err != nil {
+		if err := j.flushLocked(); err != nil {
 			j.logger.Error("flush closing journal", zap.Error(err))
 		}
 		if j.dataFp != nil {
@@ -117,10 +134,18 @@ func (j *Journal) Close() {
 		}
 		j.dataEnc, j.idsEnc = nil, nil
 		if j.legacy != nil {
+			j.legacy.closeReader()
+		}
+		if j.legacy != nil {
 			if closer, ok := j.legacy.ids.(interface{ Close() }); ok {
 				closer.Close()
 			}
 		}
+		if j.dirLock != nil {
+			j.dirLock.Close()
+			j.dirLock = nil
+		}
+
 	})
 }
 
@@ -138,7 +163,19 @@ func (j *Journal) initBufDir(ctx context.Context) (err error) {
 }
 
 // Flush flush journal files buffer to file
-func (j *Journal) Flush() (err error) {
+func (j *Journal) Flush() error {
+	j.Lock()
+	defer j.Unlock()
+	select {
+	case <-j.stopChan:
+		return os.ErrClosed
+	default:
+	}
+	return j.flushLocked()
+}
+
+// flushLocked is used only while holding the journal lock.
+func (j *Journal) flushLocked() (err error) {
 	if j.idsEnc != nil {
 		// j.logger.Debug("flush ids")
 		if err = j.idsEnc.Flush(); err != nil {
@@ -178,7 +215,7 @@ func (j *Journal) startFlushTrigger(ctx context.Context) {
 	j.logger.Info("start flush trigger", zap.Duration("interval", j.flushInterval))
 	defer j.logger.Info("journal flush exit")
 
-	defer func() { j.Lock(); defer j.Unlock(); j.Flush() }()
+	defer func() { j.Lock(); defer j.Unlock(); j.flushLocked() }()
 	var err error
 	ticker := time.NewTicker(j.flushInterval)
 	defer ticker.Stop()
@@ -190,7 +227,7 @@ func (j *Journal) startFlushTrigger(ctx context.Context) {
 			return
 		case <-ticker.C:
 			j.Lock()
-			if err = j.Flush(); err != nil {
+			if err = j.flushLocked(); err != nil {
 				j.logger.Error("flush journal", zap.Error(err))
 			}
 			j.Unlock()
@@ -225,6 +262,14 @@ func (j *Journal) startRotateTrigger(ctx context.Context) {
 func (j *Journal) LoadMaxId() (int64, error) {
 	j.RLock()
 	defer j.RUnlock()
+	select {
+	case <-j.stopChan:
+		return 0, os.ErrClosed
+	default:
+	}
+	if j.legacy == nil {
+		return 0, ErrNotStarted
+	}
 	return j.legacy.LoadMaxId()
 }
 
@@ -238,6 +283,12 @@ func (j *Journal) WriteData(data *Data) (err error) {
 	default:
 	}
 
+	if j.dataEnc == nil || j.legacy == nil {
+		return ErrNotStarted
+	}
+	if data == nil || data.ID < 0 {
+		return errors.New("data must be non-nil with a nonnegative ID")
+	}
 	if j.legacy.CheckAndRemove(data.ID) {
 		return
 	}
@@ -256,6 +307,9 @@ func (j *Journal) WriteId(id int64) error {
 	default:
 	}
 
+	if j.idsEnc == nil || j.legacy == nil {
+		return ErrNotStarted
+	}
 	if err := j.idsEnc.Write(id); err != nil {
 		return err
 	}
@@ -288,78 +342,73 @@ func (j *Journal) isReadyToRotate() (ok bool) {
 	return
 }
 
-// Rotate create new data and ids buf file.
-// this function is not threadsafe.
-func (j *Journal) Rotate(ctx context.Context) (err error) {
-	j.logger.Debug("call Rotate")
-	// make sure no other rorate is running
-	if !j.rotateLock.TryLock() {
-		return nil
-	}
-
-	defer j.rotateLock.ForceRelease()
-	// stop legacy processing
+// Rotate serializes rotation with writes, Flush, Sync and Close. A failed
+// replacement-file preparation leaves the current synchronized writer usable.
+func (j *Journal) Rotate(ctx context.Context) error {
 	j.Lock()
 	defer j.Unlock()
-	j.logger.Debug("starting to rotate")
-
 	select {
 	case <-j.stopChan:
-		return
-	case <-ctx.Done():
-		return
+		return os.ErrClosed
 	default:
 	}
-
-	if err = j.syncLocked(); err != nil {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if j.dirLock == nil {
+		return ErrNotStarted
+	}
+	scan := j.LockLegacy()
+	if scan {
+		defer j.UnLockLegacy()
+	} else if j.legacy == nil {
+		return ErrDuringRotate
+	}
+	next, err := PrepareNewBufFile(j.bufDirPath, j.fsStat, scan, j.isCompress, j.bufSizeBytes)
+	if err != nil {
+		return errors.Wrap(err, "prepare new journal files")
+	}
+	installed := false
+	defer func() {
+		if !installed {
+			next.NewDataFp.Close()
+			next.NewIDsFp.Close()
+			os.Remove(next.NewDataFp.Name())
+			os.Remove(next.NewIDsFp.Name())
+		}
+	}()
+	dataEnc, err := NewDataEncoder(next.NewDataFp, j.isCompress)
+	if err != nil {
+		return err
+	}
+	idsEnc, err := NewIdsEncoder(next.NewIDsFp, j.isCompress)
+	if err != nil {
+		return err
+	}
+	if err := j.syncLocked(); err != nil {
 		return errors.Wrap(err, "sync journal before rotation")
 	}
-	if err = j.flushAndClose(); err != nil {
-		return errors.Wrap(err, "flush and close journal")
-	}
-
-	j.lastRotateAt = utils.Clock.GetUTCNow()
-	// scan and create files
-	// acquired legacy lock means that there is no one reading legacy
-	if j.LockLegacy() {
-		j.logger.Debug("acquired legacy lock, create new file and refresh legacy loader",
-			zap.String("dir", j.bufDirPath))
-		// need to refresh legacy, so need scan=true
-		if j.fsStat, err = PrepareNewBufFile(j.bufDirPath, j.fsStat, true, j.isCompress, j.bufSizeBytes); err != nil {
-			j.UnLockLegacy()
-			return errors.Wrap(err, "prepare new buf file")
-		}
-
+	// Flush has already finished every compressed member. Do not perform another
+	// encoder Close after Sync (it appends another empty gzip member). Releasing
+	// these private encoders after the successful barrier is sufficient.
+	oldData, oldIDs := j.dataFp, j.idsFp
+	j.fsStat = next
+	j.dataFp, j.idsFp = next.NewDataFp, next.NewIDsFp
+	j.dataEnc, j.idsEnc = dataEnc, idsEnc
+	installed = true
+	if scan {
 		j.refreshLegacyLoader(ctx)
-		j.UnLockLegacy()
-	} else {
-		j.logger.Debug("not acquired legacy lock, so only create new file",
-			zap.String("dir", j.bufDirPath))
-		// no need to scan old buf files
-		if j.fsStat, err = PrepareNewBufFile(j.bufDirPath, j.fsStat, false, j.isCompress, j.bufSizeBytes); err != nil {
-			return errors.Wrap(err, "prepare new buf file")
+	}
+	j.lastRotateAt = utils.Clock.GetUTCNow()
+	var closeErr error
+	for _, fp := range []*os.File{oldData, oldIDs} {
+		if fp != nil {
+			if err := fp.Close(); err != nil {
+				closeErr = errors.Wrap(err, "close rotated journal")
+			}
 		}
 	}
-
-	// create & open data file
-	if j.dataFp != nil {
-		j.dataFp.Close()
-	}
-	j.dataFp = j.fsStat.NewDataFp
-	if j.dataEnc, err = NewDataEncoder(j.dataFp, j.isCompress); err != nil {
-		return errors.Wrapf(err, "create new data encoder `%s`", j.dataFp.Name())
-	}
-
-	// create & open ids file
-	if j.idsFp != nil {
-		j.idsFp.Close()
-	}
-	j.idsFp = j.fsStat.NewIDsFp
-	if j.idsEnc, err = NewIdsEncoder(j.idsFp, j.isCompress); err != nil {
-		return errors.Wrapf(err, "create new ids encoder `%s`", j.idsFp.Name())
-	}
-
-	return nil
+	return closeErr
 }
 
 // refreshLegacyLoader create or reset legacy loader
@@ -388,6 +437,11 @@ func (j *Journal) refreshLegacyLoader(ctx context.Context) {
 
 // LockLegacy lock legacy to prevent rotate, clean
 func (j *Journal) LockLegacy() bool {
+	select {
+	case <-j.stopChan:
+		return false
+	default:
+	}
 	j.logger.Debug("call LockLegacy")
 	return j.legacyLock.TryLock()
 }
@@ -406,6 +460,11 @@ func (j *Journal) UnLockLegacy() bool {
 
 // GetMetric monitor inteface
 func (j *Journal) GetMetric() map[string]interface{} {
+	j.RLock()
+	defer j.RUnlock()
+	if j.legacy == nil {
+		return map[string]interface{}{"idsSetLen": 0}
+	}
 	return map[string]interface{}{
 		"idsSetLen": j.legacy.GetIdsLen(),
 	}
@@ -414,12 +473,23 @@ func (j *Journal) GetMetric() map[string]interface{} {
 // LoadLegacyBuf load legacy data one by one
 // ⚠️Warn: should call `j.LockLegacy()` before invoke this method
 func (j *Journal) LoadLegacyBuf(data *Data) (err error) {
+	select {
+	case <-j.stopChan:
+		return os.ErrClosed
+	default:
+	}
 	if !j.IsLegacyRunning() {
 		j.logger.Panic("should call `j.LockLegacy()` first")
 	}
 
 	j.Lock()
 	defer j.Unlock()
+	select {
+	case <-j.stopChan:
+		j.UnLockLegacy()
+		return os.ErrClosed
+	default:
+	}
 
 	if j.legacy == nil {
 		j.UnLockLegacy()
@@ -433,7 +503,8 @@ func (j *Journal) LoadLegacyBuf(data *Data) (err error) {
 			return errors.Wrap(err, "sync replay before cleanup")
 		}
 		if err = j.legacy.Clean(); err != nil {
-			j.logger.Error("clean legacy", zap.Error(err))
+			j.UnLockLegacy()
+			return errors.Wrap(err, "clean legacy")
 		}
 
 		j.UnLockLegacy()
@@ -456,10 +527,13 @@ func (j *Journal) Sync() error {
 		return os.ErrClosed
 	default:
 	}
+	if j.dataEnc == nil || j.idsEnc == nil {
+		return ErrNotStarted
+	}
 	return j.syncLocked()
 }
 func (j *Journal) syncLocked() error {
-	if err := j.Flush(); err != nil {
+	if err := j.flushLocked(); err != nil {
 		return err
 	}
 	for _, fp := range []*os.File{j.dataFp, j.idsFp} {

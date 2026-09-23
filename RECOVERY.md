@@ -29,3 +29,15 @@ an extra rotation; reserve unacknowledged IDs; suppress already acknowledged
 records; exclude the active writer; recover complete prefixes in plain/gzip
 formats; retain byte-identical interrupted-append evidence; reject arbitrary
 corruption. The normal CI repeats these tests with the race detector.
+
+A refreshed replay snapshot closes and invalidates a partially consumed cursor.
+After yielding the replay lease across a rotation, identical records may repeat;
+unread newly sealed records must never be reclaimed. A failed cleanup returns an
+error, retains retry state, and is not successful EOF. ACK decode errors also
+fail replay/recovery rather than being treated as an empty acknowledgement set.
+
+Cleanup retains the newest ACK segment and the segment containing the highest
+acknowledged ID. Completion can be out of order; keeping only the newest file
+could otherwise roll the recovered identity frontier backwards. At most two old
+ACK segments are retained by this rule. See BEHAVIOR.md for tests and validation
+limits, including the native-module-graph check still required before merge.
