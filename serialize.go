@@ -28,6 +28,9 @@ var (
 
 const (
 	defaultCompressNBlocks = 8
+	// Readers need bounded lookahead, not the 4 MiB writer/compressor buffer.
+	// Individual records may still exceed this size.
+	readBufferSize = 64 << 10
 )
 
 // BaseSerializer base serializer
@@ -127,9 +130,9 @@ func NewIdsDecoder(fp *os.File, isCompress bool) (decoder *IdsDecoder, err error
 		if err != nil {
 			return nil, errors.Wrap(err, "use gzip read ids fp")
 		}
-		decoder.reader = bufio.NewReaderSize(decoder.gzReader, BufSize)
+		decoder.reader = bufio.NewReaderSize(decoder.gzReader, readBufferSize)
 	} else {
-		decoder.reader = bufio.NewReaderSize(fp, BufSize)
+		decoder.reader = bufio.NewReaderSize(fp, readBufferSize)
 	}
 
 	return decoder, nil
@@ -147,9 +150,9 @@ func NewDataDecoder(fp *os.File, isCompress bool) (decoder *DataDecoder, err err
 		if err != nil {
 			return nil, errors.Wrap(err, "use gzip read ids fp")
 		}
-		decoder.reader = msgp.NewReaderSize(decoder.gzReader, BufSize)
+		decoder.reader = msgp.NewReaderSize(decoder.gzReader, readBufferSize)
 	} else {
-		decoder.reader = msgp.NewReaderSize(fp, BufSize)
+		decoder.reader = msgp.NewReaderSize(fp, readBufferSize)
 	}
 	return decoder, err
 }
