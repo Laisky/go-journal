@@ -1,0 +1,35 @@
+name: Journal audit baseline
+on:
+  push:
+    branches: [test/user-contracts-e2e-20260923]
+    paths: [.github/workflows/audit-workspace.yml]
+permissions:
+  contents: read
+jobs:
+  baseline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version: '1.27.x'
+      - name: Verify unchanged production and record baseline
+        run: |
+          mkdir -p /tmp/journal-audit
+          go version | tee /tmp/journal-audit/toolchain.txt
+          go mod download
+          go mod verify
+          go test -mod=readonly -count=1 -timeout=180s -coverprofile=/tmp/journal-audit/baseline.cover ./... | tee /tmp/journal-audit/baseline.txt
+          go tool cover -func=/tmp/journal-audit/baseline.cover | tee /tmp/journal-audit/coverage.txt
+          go test -mod=readonly -race -count=1 -timeout=180s ./...
+          git bundle create /tmp/journal-audit/source.bundle --all
+          tar -czf /tmp/journal-audit/modules.tar.gz -C "$(go env GOMODCACHE)" .
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: journal-audit-baseline
+          path: /tmp/journal-audit
+          retention-days: 7
