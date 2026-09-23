@@ -21,16 +21,24 @@ func TestPerformanceContractConcurrentRefresh(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for round := 0; round < 4; round++ {
-				for id := 0; id < unique; id++ { s.AddInt64(int64(id)) }
+				for id := 0; id < unique; id++ {
+					s.AddInt64(int64(id))
+				}
 			}
 		}()
 	}
 	wg.Wait()
-	if s.GetLen() != unique { t.Fatalf("duplicate refresh changed cardinality: %d", s.GetLen()) }
+	if s.GetLen() != unique {
+		t.Fatalf("duplicate refresh changed cardinality: %d", s.GetLen())
+	}
 	for repeat := 0; repeat < 3; repeat++ {
 		for id := 0; id < unique; id++ {
-			if !s.CheckAndRemove(int64(id)) { t.Fatalf("confirmation was consumed for ID %d", id) }
+			if !s.CheckAndRemove(int64(id)) {
+				t.Fatalf("confirmation was consumed for ID %d", id)
+			}
 		}
 	}
-	if s.CheckAndRemove(-1) || s.GetLen() != unique { t.Fatal("lookup changed membership/cardinality") }
+	if s.CheckAndRemove(-1) || s.GetLen() != unique {
+		t.Fatal("lookup changed membership/cardinality")
+	}
 }
