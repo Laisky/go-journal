@@ -493,3 +493,53 @@ func TestBehaviorDeliveryOracleRejectsFalseSuccess(t *testing.T) {
 		})
 	}
 }
+
+// /proc/self/fd is a real readable but non-unlinkable path, on both root and
+// unprivileged Linux runners. It deterministically fails after the first ACK
+// removal without mocking the filesystem or relying on chmod under root.
+func TestBehaviorCleanupRetryAfterPartialACKRemoval(t *testing.T) {
+	dir := t.TempDir()
+	encode := func(name string, id int64) *os.File {
+		fp, err := os.Create(filepath.Join(dir, name))
+		behaviorCheck(t, err)
+		var word [8]byte
+		binary.BigEndian.PutUint64(word[:], uint64(id))
+		_, err = fp.Write(word[:])
+		behaviorCheck(t, err)
+		behaviorCheck(t, fp.Sync())
+		t.Cleanup(func() { fp.Close() })
+		return fp
+	}
+	frontier := encode("frontier.ids", 1000)
+	first := encode("first.ids", 1)
+	blocked := encode("blocked.ids", 2)
+	tail := encode("tail.ids", 3)
+	newest := encode("newest.ids", 4)
+	protected := fmt.Sprintf("/proc/self/fd/%d", blocked.Fd())
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	loader := journal.NewLegacyLoader(ctx, journal.Logger, nil,
+		[]string{frontier.Name(), first.Name(), protected, tail.Name(), newest.Name()}, false, time.Hour)
+	if err := loader.Clean(); err == nil {
+		t.Fatal("read-only ACK removal falsely succeeded")
+	}
+	if _, err := os.Stat(first.Name()); !os.IsNotExist(err) {
+		t.Fatalf("first removal did not happen: %v", err)
+	}
+	err := loader.Clean()
+	if err == nil || !strings.Contains(err.Error(), protected) {
+		t.Fatalf("retry lost its cleanup plan after a successful partial removal: %v", err)
+	}
+	// The caller supplies the repaired current snapshot, excluding the protected
+	// input and the already removed path. Cleanup can then finish successfully.
+	loader.Reset(nil, []string{frontier.Name(), tail.Name(), newest.Name()})
+	behaviorCheck(t, loader.Clean())
+	if _, err := os.Stat(tail.Name()); !os.IsNotExist(err) {
+		t.Fatalf("repaired cleanup did not finish: %v", err)
+	}
+	for _, fp := range []*os.File{frontier, newest} {
+		if _, err := os.Stat(fp.Name()); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
