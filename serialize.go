@@ -154,7 +154,13 @@ func NewDataDecoder(fp *os.File, isCompress bool) (decoder *DataDecoder, err err
 		}
 		decoder.reader = msgp.NewReaderSize(decoder.gzReader, readBufferSize)
 	} else {
-		decoder.reader = msgp.NewReaderSize(fp, readBufferSize)
+		// Large uncompressed scans benefit from the original read-ahead size.
+		// Keep small segments bounded; never use file size as a record limit.
+		size := readBufferSize
+		if info, statErr := fp.Stat(); statErr == nil && info.Mode().IsRegular() && info.Size() >= int64(BufSize) {
+			size = BufSize
+		}
+		decoder.reader = msgp.NewReaderSize(fp, size)
 	}
 	return decoder, err
 }

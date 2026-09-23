@@ -25,3 +25,24 @@ These are not production SSD throughput claims. Small-scan/replay timings improv
 No write flush, file/directory Sync, durable acceptance, recovery validation, corruption handling, confirmation TTL or on-disk format has been weakened. The allocation changes are kept only with public-API controls for plain/gzip records exceeding 4 MiB, 64 KiB boundaries, byte-exact ID output, duplicate/out-of-order/extreme IDs, truncated IDs, concurrent refresh, stable cardinality and non-consuming lookup. Existing concurrent writers, failure injection, interrupted-tail evidence and crash recovery tests remain enabled.
 
 Every source iteration was compiled, vetted, and tested with this repository's actual module graph, including five randomized race-suite runs, before its source commit was pushed. Temporary source-publication workflows are not part of the final tree. The application integration additionally reruns its full-process delivery contracts.
+
+## Measured correction: adaptive plain-data read-ahead
+
+The first hosted paired campaign (application Actions run 35858164130)
+exposed a repeatable 14.7% slowdown for the 4,096-record uncompressed
+recovery scan: 6.921 ms baseline versus 7.937 ms with fixed 64 KiB data
+read-ahead, with non-overlapping observed ranges. That fixed-size policy
+is superseded, not presented as a universal improvement.
+
+Uncompressed regular data files at least 4 MiB now retain the original
+4 MiB read-ahead. Smaller data files, compressed decoding and ID decoding
+retain 64 KiB lookahead. The file stat is a buffer-size hint only; stat
+failure does not hide the decoder's existing errors, and file size is
+never a limit on accepted records or a substitute for decoding.
+
+An alternating five-pair local comparison reduced the large plain scan
+from 9.733 ms to 7.142 ms while the 64-record scan was essentially
+unchanged (201 versus 202 microseconds). The final application campaign
+reruns every workload and the whole durable pipeline with the corrected
+policy. Its raw results include the rejected fixed-size candidate so
+the unfavorable evidence is retained.
