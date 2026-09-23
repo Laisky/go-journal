@@ -31,26 +31,25 @@ type Journal struct {
 	sync.RWMutex
 	*option
 
-	stopChan               chan struct{}
-	closeOnce              sync.Once
-	lifecycleMu            sync.Mutex
-	workers                sync.WaitGroup
-	started                bool
-	dirLock                *fileutil.LockedFile
-	rotateLock, legacyLock *utils.Mutex
-	dataFp, idsFp          *os.File // current writting journal file
-	fsStat                 *bufFileStat
-	legacy                 *LegacyLoader
-	dataEnc                *DataEncoder
-	idsEnc                 *IdsEncoder
-	lastRotateAt           time.Time
+	stopChan      chan struct{}
+	closeOnce     sync.Once
+	lifecycleMu   sync.Mutex
+	workers       sync.WaitGroup
+	started       bool
+	dirLock       *fileutil.LockedFile
+	legacyLock    *utils.Mutex
+	dataFp, idsFp *os.File // current writting journal file
+	fsStat        *bufFileStat
+	legacy        *LegacyLoader
+	dataEnc       *DataEncoder
+	idsEnc        *IdsEncoder
+	lastRotateAt  time.Time
 }
 
 // NewJournal create new Journal
 func NewJournal(opts ...OptionFunc) (j *Journal, err error) {
 	j = &Journal{
 		stopChan:   make(chan struct{}),
-		rotateLock: utils.NewMutex(),
 		legacyLock: utils.NewMutex(),
 		option:     newOption(),
 	}
@@ -338,78 +337,73 @@ func (j *Journal) isReadyToRotate() (ok bool) {
 	return
 }
 
-// Rotate create new data and ids buf file.
-// this function is not threadsafe.
-func (j *Journal) Rotate(ctx context.Context) (err error) {
-	j.logger.Debug("call Rotate")
-	// make sure no other rorate is running
-	if !j.rotateLock.TryLock() {
-		return nil
-	}
-
-	defer j.rotateLock.ForceRelease()
-	// stop legacy processing
+// Rotate serializes rotation with writes, Flush, Sync and Close. A failed
+// replacement-file preparation leaves the current synchronized writer usable.
+func (j *Journal) Rotate(ctx context.Context) error {
 	j.Lock()
 	defer j.Unlock()
-	j.logger.Debug("starting to rotate")
-
 	select {
 	case <-j.stopChan:
 		return os.ErrClosed
-	case <-ctx.Done():
-		return ctx.Err()
 	default:
 	}
-
-	if err = j.syncLocked(); err != nil {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if j.dirLock == nil {
+		return ErrNotStarted
+	}
+	scan := j.LockLegacy()
+	if scan {
+		defer j.UnLockLegacy()
+	} else if j.legacy == nil {
+		return ErrDuringRotate
+	}
+	next, err := PrepareNewBufFile(j.bufDirPath, j.fsStat, scan, j.isCompress, j.bufSizeBytes)
+	if err != nil {
+		return errors.Wrap(err, "prepare new journal files")
+	}
+	installed := false
+	defer func() {
+		if !installed {
+			next.NewDataFp.Close()
+			next.NewIDsFp.Close()
+			os.Remove(next.NewDataFp.Name())
+			os.Remove(next.NewIDsFp.Name())
+		}
+	}()
+	dataEnc, err := NewDataEncoder(next.NewDataFp, j.isCompress)
+	if err != nil {
+		return err
+	}
+	idsEnc, err := NewIdsEncoder(next.NewIDsFp, j.isCompress)
+	if err != nil {
+		return err
+	}
+	if err := j.syncLocked(); err != nil {
 		return errors.Wrap(err, "sync journal before rotation")
 	}
-	if err = j.flushAndClose(); err != nil {
-		return errors.Wrap(err, "flush and close journal")
-	}
-
-	j.lastRotateAt = utils.Clock.GetUTCNow()
-	// scan and create files
-	// acquired legacy lock means that there is no one reading legacy
-	if j.LockLegacy() {
-		j.logger.Debug("acquired legacy lock, create new file and refresh legacy loader",
-			zap.String("dir", j.bufDirPath))
-		// need to refresh legacy, so need scan=true
-		if j.fsStat, err = PrepareNewBufFile(j.bufDirPath, j.fsStat, true, j.isCompress, j.bufSizeBytes); err != nil {
-			j.UnLockLegacy()
-			return errors.Wrap(err, "prepare new buf file")
-		}
-
+	// Flush has already finished every compressed member. Do not perform another
+	// encoder Close after Sync (it appends another empty gzip member). Releasing
+	// these private encoders after the successful barrier is sufficient.
+	oldData, oldIDs := j.dataFp, j.idsFp
+	j.fsStat = next
+	j.dataFp, j.idsFp = next.NewDataFp, next.NewIDsFp
+	j.dataEnc, j.idsEnc = dataEnc, idsEnc
+	installed = true
+	if scan {
 		j.refreshLegacyLoader(ctx)
-		j.UnLockLegacy()
-	} else {
-		j.logger.Debug("not acquired legacy lock, so only create new file",
-			zap.String("dir", j.bufDirPath))
-		// no need to scan old buf files
-		if j.fsStat, err = PrepareNewBufFile(j.bufDirPath, j.fsStat, false, j.isCompress, j.bufSizeBytes); err != nil {
-			return errors.Wrap(err, "prepare new buf file")
+	}
+	j.lastRotateAt = utils.Clock.GetUTCNow()
+	var closeErr error
+	for _, fp := range []*os.File{oldData, oldIDs} {
+		if fp != nil {
+			if err := fp.Close(); err != nil {
+				closeErr = errors.Wrap(err, "close rotated journal")
+			}
 		}
 	}
-
-	// create & open data file
-	if j.dataFp != nil {
-		j.dataFp.Close()
-	}
-	j.dataFp = j.fsStat.NewDataFp
-	if j.dataEnc, err = NewDataEncoder(j.dataFp, j.isCompress); err != nil {
-		return errors.Wrapf(err, "create new data encoder `%s`", j.dataFp.Name())
-	}
-
-	// create & open ids file
-	if j.idsFp != nil {
-		j.idsFp.Close()
-	}
-	j.idsFp = j.fsStat.NewIDsFp
-	if j.idsEnc, err = NewIdsEncoder(j.idsFp, j.isCompress); err != nil {
-		return errors.Wrapf(err, "create new ids encoder `%s`", j.idsFp.Name())
-	}
-
-	return nil
+	return closeErr
 }
 
 // refreshLegacyLoader create or reset legacy loader

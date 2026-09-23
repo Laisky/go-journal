@@ -169,6 +169,12 @@ func NewDataDecoder(fp *os.File, isCompress bool) (decoder *DataDecoder, err err
 func (enc *DataEncoder) Write(msg *Data) (err error) {
 	enc.Lock()
 	defer enc.Unlock()
+	if enc.writer == nil {
+		return os.ErrClosed
+	}
+	if msg == nil || msg.ID < 0 {
+		return errors.New("data must be non-nil with a nonnegative ID")
+	}
 	if err = msg.EncodeMsg(enc.writer); err != nil {
 		return errors.Wrap(err, "Encode journal data")
 	}
@@ -186,6 +192,9 @@ func (enc *DataEncoder) Write(msg *Data) (err error) {
 func (enc *DataEncoder) Flush() (err error) {
 	enc.Lock()
 	defer enc.Unlock()
+	if enc.writer == nil {
+		return os.ErrClosed
+	}
 	if err = enc.writer.Flush(); err != nil {
 		return errors.Wrap(err, "flush data encoder")
 	}
@@ -201,6 +210,9 @@ func (enc *DataEncoder) Flush() (err error) {
 func (enc *DataEncoder) Close() (err error) {
 	enc.Lock()
 	defer enc.Unlock()
+	if enc.writer == nil {
+		return nil
+	}
 	if err = enc.writer.Flush(); err != nil {
 		return errors.Wrap(err, "flush data encoder")
 	}
@@ -232,6 +244,9 @@ func (enc *IdsEncoder) Write(id int64) (err error) {
 
 	enc.Lock()
 	defer enc.Unlock()
+	if enc.writer == nil {
+		return os.ErrClosed
+	}
 	var offset int64
 	if enc.baseID == -1 {
 		enc.baseID = id
@@ -260,6 +275,9 @@ func (enc *IdsEncoder) Write(id int64) (err error) {
 func (enc *IdsEncoder) Flush() (err error) {
 	enc.Lock()
 	defer enc.Unlock()
+	if enc.writer == nil {
+		return os.ErrClosed
+	}
 	if err = enc.writer.Flush(); err != nil {
 		return errors.Wrap(err, "flush ids encoder")
 	}
@@ -276,6 +294,9 @@ func (enc *IdsEncoder) Flush() (err error) {
 func (enc *IdsEncoder) Close() (err error) {
 	enc.Lock()
 	defer enc.Unlock()
+	if enc.writer == nil {
+		return nil
+	}
 	if err = enc.writer.Flush(); err != nil {
 		return errors.Wrap(err, "flush ids encoder")
 	}

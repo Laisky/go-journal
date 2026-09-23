@@ -23,9 +23,9 @@ import (
 
 var (
 	// dataFileNameReg journal data file name pattern
-	dataFileNameReg = regexp.MustCompile(`^\d{8}_\d{8}\.buf(.gz)?$`)
+	dataFileNameReg = regexp.MustCompile(`^\d{8}_\d{8}\.buf(\.gz)?$`)
 	// idsFileNameReg journal id file name pattern
-	idsFileNameReg  = regexp.MustCompile(`^\d{8}_\d{8}\.ids(.gz)?$`)
+	idsFileNameReg  = regexp.MustCompile(`^\d{8}_\d{8}\.ids(\.gz)?$`)
 	fileGzSuffixReg = regexp.MustCompile(`\.gz$`)
 
 	defaultFileNameTimeLayout = "20060102"
@@ -67,8 +67,8 @@ type bufFileStat struct {
 }
 
 // PrepareNewBufFile create new data & id files, and update bufFileStat.
-// * if `isScan=true`, will scan directory to find existing buf files,
-//   then generate new buf files.
+//   - if `isScan=true`, will scan directory to find existing buf files,
+//     then generate new buf files.
 //
 // * if `isScan=false`, keep old buf files, directly generate new file without scan directory.
 func PrepareNewBufFile(dirPath string, oldFsStat *bufFileStat, isScan, isGz bool, sizeBytes int64) (fsStat *bufFileStat, err error) {
@@ -98,9 +98,9 @@ func PrepareNewBufFile(dirPath string, oldFsStat *bufFileStat, isScan, isGz bool
 			absFname = path.Join(dirPath, fname)
 
 			// macos fs bug, could get removed files
-			if _, err := os.Stat(absFname); os.IsNotExist(err) {
+			if _, err := os.Stat(absFname); err != nil {
 				logger.Warn("file not exists", zap.String("fname", fname))
-				return nil, nil
+				return nil, errors.Wrap(err, "stat journal directory entry")
 			}
 
 			if dataFileNameReg.MatchString(fname) {
@@ -117,7 +117,7 @@ func PrepareNewBufFile(dirPath string, oldFsStat *bufFileStat, isScan, isGz bool
 					latestIDsFName = fname
 				}
 
-			} else {
+			} else if fname != ".journal.lock" {
 				logger.Warn("unknown file in buf directory", zap.String("file", fname))
 			}
 		}
@@ -153,16 +153,20 @@ func PrepareNewBufFile(dirPath string, oldFsStat *bufFileStat, isScan, isGz bool
 		}
 	}
 
+	latestDataFName = strings.TrimSuffix(latestDataFName, ".gz")
+	latestIDsFName = strings.TrimSuffix(latestIDsFName, ".gz")
 	if isGz {
 		latestDataFName = appendGzSuffix(latestDataFName)
 		latestIDsFName = appendGzSuffix(latestIDsFName)
 	}
 
-	if fsStat.NewDataFp, err = OpenBufFile(filepath.Join(dirPath, latestDataFName), sizeBytes/2); err != nil {
+	if fsStat.NewDataFp, err = createBufFile(filepath.Join(dirPath, latestDataFName), sizeBytes/2); err != nil {
 		return nil, err
 	}
 
-	if fsStat.NewIDsFp, err = OpenBufFile(filepath.Join(dirPath, latestIDsFName), 0); err != nil {
+	if fsStat.NewIDsFp, err = createBufFile(filepath.Join(dirPath, latestIDsFName), 0); err != nil {
+		fsStat.NewDataFp.Close()
+		os.Remove(fsStat.NewDataFp.Name())
 		return nil, err
 	}
 
@@ -191,6 +195,7 @@ func OpenBufFile(filepath string, preallocateBytes int64) (fp *os.File, err erro
 
 	if preallocateBytes != 0 {
 		if err = fileutil.Preallocate(fp, preallocateBytes, false); err != nil {
+			fp.Close()
 			return nil, errors.Wrapf(err, "tpreallocate file bytes `%d`", preallocateBytes)
 		}
 	}
@@ -202,22 +207,43 @@ func OpenBufFile(filepath string, preallocateBytes int64) (fp *os.File, err erro
 // file name looks like `yyyymmddnnnn.ids`, nnnn begin from 0001 for each day
 func GenerateNewBufFName(now time.Time, oldFName string) (string, error) {
 	Logger.Debug("GenerateNewBufFName", zap.Time("now", now), zap.String("oldFName", oldFName))
-	finfo := strings.SplitN(oldFName, ".", 2) // {name, ext}
-	if len(finfo) < 2 {
-		return oldFName, fmt.Errorf("oldFname `%s` not correct", oldFName)
+	if !dataFileNameReg.MatchString(oldFName) && !idsFileNameReg.MatchString(oldFName) {
+		return "", fmt.Errorf("invalid journal filename %q", oldFName)
 	}
-
+	finfo := strings.SplitN(oldFName, ".", 2)
 	fts := finfo[0][:8]
-	fidx := finfo[0][9:]
-	fext := strings.ToLower(finfo[1])
-	if now.Format(defaultFileNameTimeLayout) != fts {
-		return now.Format(defaultFileNameTimeLayout) + "_00000001." + fext, nil
+	if _, err := time.Parse(defaultFileNameTimeLayout, fts); err != nil {
+		return "", err
 	}
-
-	idx, err := strconv.ParseInt(fidx, 10, 64)
+	fext := finfo[1]
+	today := now.Format(defaultFileNameTimeLayout)
+	if today > fts {
+		return today + "_00000001." + fext, nil
+	}
+	// A backward clock must not reuse a previous day's namespace.
+	idx, err := strconv.ParseInt(finfo[0][9:], 10, 64)
 	if err != nil {
-		return oldFName, errors.Wrapf(err, "parse buf file's idx `%s` got error", fidx)
+		return "", err
 	}
-
+	if idx >= 99999999 {
+		return "", errors.New("journal filename sequence exhausted")
+	}
 	return fmt.Sprintf("%s_%08d.%s", fts, idx+1, fext), nil
+}
+
+// Internal rotations must never reopen and overwrite an existing segment.
+// The public OpenBufFile helper retains its existing open-or-create behavior.
+func createBufFile(name string, preallocateBytes int64) (*os.File, error) {
+	fp, err := os.OpenFile(name, os.O_RDWR|os.O_CREATE|os.O_EXCL, FileMode)
+	if err != nil {
+		return nil, errors.Wrap(err, "create journal segment")
+	}
+	if preallocateBytes > 0 {
+		if err := fileutil.Preallocate(fp, preallocateBytes, false); err != nil {
+			fp.Close()
+			os.Remove(name)
+			return nil, errors.Wrap(err, "preallocate journal segment")
+		}
+	}
+	return fp, nil
 }
