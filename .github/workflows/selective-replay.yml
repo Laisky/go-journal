@@ -34,6 +34,8 @@ jobs:
           go test -mod=readonly -count=1 -json ./... > /tmp/selective-evidence/full.jsonl
           go test -mod=readonly -race -shuffle=on -count=3 -json ./... > /tmp/selective-evidence/race.jsonl
           go test -mod=readonly -run '^$' -fuzz '^FuzzSelectiveAcceptedFrames$' -fuzztime=8s > /tmp/selective-evidence/fuzz.log
+          go test -mod=readonly -run '^$' -fuzz '^FuzzSelectiveSequenceState$' -fuzztime=8s > /tmp/selective-evidence/sequence-fuzz.log
+          python3 .scripts/verify_selective_sequence.py /tmp/selective-evidence
           go test -mod=readonly -run '^$' -bench '^BenchmarkSelectiveAcknowledgedReplay$' -benchmem -benchtime=200ms -count=3 > /tmp/selective-evidence/benchmark.txt
           git diff --exit-code -- go.mod go.sum
       - name: Resolve exact public module for downstream pinning
