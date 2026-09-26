@@ -168,7 +168,8 @@ READ_NEW_FILE:
 	}
 
 READ_NEW_LINE:
-	if err = l.decoder.Read(data); err != nil {
+	var acknowledged bool
+	if acknowledged, err = l.decoder.readWithAcknowledgement(data, l.ids.CheckAndRemove); err != nil {
 		if err != io.EOF && l.newestDataName() == l.dataFp.Name() && incompleteRecord(err) {
 			if preserveErr := preserveIncomplete(l.dataFp.Name()); preserveErr != nil {
 				return preserveErr
@@ -195,7 +196,7 @@ READ_NEW_LINE:
 		goto READ_NEW_FILE
 	}
 
-	if l.ids.CheckAndRemove(data.ID) { // ignore committed data
+	if acknowledged { // ignore only the exact acknowledged record
 		// l.logger.Debug("data already consumed", zap.Int64("id", id))
 		goto READ_NEW_LINE
 	}
