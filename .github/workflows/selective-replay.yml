@@ -1,0 +1,66 @@
+name: Selective replay contracts
+on:
+  pull_request:
+  push:
+    branches: [master]
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GOTOOLCHAIN: local
+      GOMAXPROCS: '4'
+      SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version: '1.27.1'
+      - name: Native correctness, differential fuzz and measurement
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/selective-evidence
+          git rev-parse HEAD HEAD^{tree} > /tmp/selective-evidence/source.txt
+          git archive --format=tar.gz HEAD > /tmp/selective-evidence/source.tar.gz
+          go version > /tmp/selective-evidence/toolchain.txt
+          cp go.mod go.sum /tmp/selective-evidence/
+          go mod download
+          go mod verify > /tmp/selective-evidence/module-verify.txt
+          go test -mod=readonly -count=1 -json ./... > /tmp/selective-evidence/full.jsonl
+          go test -mod=readonly -race -shuffle=on -count=3 -json ./... > /tmp/selective-evidence/race.jsonl
+          go test -mod=readonly -run '^$' -fuzz '^FuzzSelectiveAcceptedFrames$' -fuzztime=8s > /tmp/selective-evidence/fuzz.log
+          go test -mod=readonly -run '^$' -bench '^BenchmarkSelectiveAcknowledgedReplay$' -benchmem -benchtime=200ms -count=3 > /tmp/selective-evidence/benchmark.txt
+          git diff --exit-code -- go.mod go.sum
+      - name: Resolve exact public module for downstream pinning
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/selective-resolve
+          cd /tmp/selective-resolve
+          go mod init example.invalid/selective-resolve
+          go mod download -json "github.com/Laisky/go-journal@$SOURCE_SHA" > /tmp/selective-evidence/download.json
+          python3 - <<'PY'
+          import json, pathlib, shutil
+          root = pathlib.Path('/tmp/selective-evidence')
+          meta = json.loads((root/'download.json').read_text())
+          assert 'Error' not in meta and meta['Sum'] and meta['GoModSum']
+          for field, name in [('Zip', 'module.zip'), ('Info', 'module.info'), ('GoMod', 'module.mod')]:
+              shutil.copyfile(meta[field], root/name)
+          PY
+      - name: Hash retained evidence
+        if: always()
+        run: |
+          cd /tmp/selective-evidence
+          find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: selective-replay-${{ github.sha }}
+          path: /tmp/selective-evidence
+          retention-days: 14
+          if-no-files-found: error
