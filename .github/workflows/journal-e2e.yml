@@ -14,7 +14,8 @@ jobs:
     env:
       GOTOOLCHAIN: local
       GOMAXPROCS: '4'
-      BASELINE: df475e4f61c2028c579f9fe4b091c83823ff3184
+      BASELINE: 71790780de0b665e1c33b2583c424fcc770944b2
+      CANDIDATE_MODE: isolated
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -24,16 +25,16 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           go-version: '1.27.1'
-      - name: Build exact adopted head and frozen baseline with identical workers
+      - name: Build identical workers against recovered baseline and explicit candidate
         shell: bash
         run: |
           set -euo pipefail
-          E="$RUNNER_TEMP/scan-evidence"
+          E="$RUNNER_TEMP/ack-evidence"
           mkdir -p "$E"
           git rev-parse HEAD HEAD^{tree} > "$E/source.txt"
           git archive --format=tar.gz HEAD > "$E/source.tar.gz"
           git archive --format=tar.gz "$BASELINE" > "$E/baseline-source.tar.gz"
-          printf 'baseline=%s\ncandidate=exact checked-in HEAD\n' "$BASELINE" > "$E/campaign.txt"
+          printf 'baseline=%s\ncandidate_mode=%s\n' "$BASELINE" "$CANDIDATE_MODE" > "$E/campaign.txt"
           go version > "$E/toolchain.txt"
           go env -json GOARCH GOOS GOEXPERIMENT CGO_ENABLED GOAMD64 > "$E/compiler-env.json"
           python3 - <<'PY' > "$E/runtime-env.json"
@@ -44,29 +45,33 @@ jobs:
           go mod download
           go mod verify > "$E/module-verify.txt"
           git show "$BASELINE:serialize.go" | cmp - serialize.go
-          test -z "$(gofmt -l scan_buffers.go scan_buffers_test.go writer_buffer_test.go tests/e2eperf/main.go tests/e2eperf/segments_test.go)"
+          git show "$BASELINE:journal.go" | cmp - journal.go
+          test -z "$(gofmt -l scan_ids.go scan_ids_test.go)"
           python3 -m unittest discover -s tests/e2eperf -p 'test_*.py' -v > "$E/python-tests.txt" 2>&1
           for side in baseline candidate; do
-            T="$RUNNER_TEMP/scan-$side"
+            T="$RUNNER_TEMP/ack-$side"
             ref=HEAD
             if [ "$side" = baseline ]; then ref="$BASELINE"; fi
             git worktree add --detach "$T" "$ref"
             cmp go.mod "$T/go.mod"
             cmp go.sum "$T/go.sum"
             cp tests/e2eperf/*.go "$T/tests/e2eperf/"
-            cp scan_buffers.go scan_buffers_test.go writer_buffer_test.go "$T/"
-            (cd "$T" && git diff -- legacy.go serialize.go > "$E/$side.patch" && go build -mod=readonly -trimpath -o "$E/worker-$side" ./tests/e2eperf)
+            cp scan_ids.go scan_ids_test.go "$T/"
+            if [ "$side" = candidate ] && [ "$CANDIDATE_MODE" = isolated ]; then
+              python3 tests/e2eperf/ack_experiment.py --source "$T"
+            fi
+            (cd "$T" && git diff -- legacy.go serialize.go journal.go > "$E/$side.patch" && go build -mod=readonly -trimpath -o "$E/worker-$side" ./tests/e2eperf)
             go version -m "$E/worker-$side" > "$E/build-$side.txt"
           done
-          test ! -s "$E/candidate.patch"
-          sha256sum "$E"/worker-* tests/e2eperf/*.* scan_buffers*.go writer_buffer_test.go > "$E/build-hashes.txt"
-      - name: Native behavior race error reset immediate crash and negative controls
+          if [ "$CANDIDATE_MODE" = adopted ]; then test ! -s "$E/candidate.patch"; else test -s "$E/candidate.patch"; fi
+          sha256sum "$E"/worker-* tests/e2eperf/*.* scan_ids*.go > "$E/build-hashes.txt"
+      - name: Native behavior race ACK resets crash recovery and negative controls
         shell: bash
         run: |
           set -euo pipefail
-          E="$RUNNER_TEMP/scan-evidence"
-          (cd "$RUNNER_TEMP/scan-baseline" && go test -mod=readonly -count=1 -run 'TestScanBuffer|TestConcurrentMultiSegment|TestSeedRotation|TestWriterBuffer' -json ./... > "$E/baseline-boundaries.jsonl")
-          cd "$RUNNER_TEMP/scan-candidate"
+          E="$RUNNER_TEMP/ack-evidence"
+          (cd "$RUNNER_TEMP/ack-baseline" && go test -mod=readonly -count=1 -run 'TestACKScan|TestACKOnly|TestConcurrentMultiSegment|TestSeedRotation' -json ./... > "$E/baseline-boundaries.jsonl")
+          cd "$RUNNER_TEMP/ack-candidate"
           go vet -mod=readonly ./... > "$E/vet.txt" 2>&1
           go test -mod=readonly -count=1 -json ./... > "$E/full.jsonl"
           go test -mod=readonly -race -shuffle=on -count=3 -json ./... > "$E/race.jsonl"
@@ -74,42 +79,45 @@ jobs:
           python3 tests/e2eperf/negative.py --out "$E/negative" > "$E/negative-summary.json"
           python3 tests/e2eperf/sync_experiment.py --source . --negative "$E/sync-negative" > "$E/sync-negative-summary.json"
           python3 tests/e2eperf/segment_negative.py --out "$E/segment-negative" > "$E/segment-negative-summary.json"
+          python3 tests/e2eperf/ack_negative.py --out "$E/ack-negative" > "$E/ack-negative-summary.json"
           git diff --exit-code -- go.mod go.sum
-      - name: Pre-campaign A-A controls
+      - name: Pre-campaign identical-binary controls
         shell: bash
         run: |
           set -euo pipefail
-          E="$RUNNER_TEMP/scan-evidence"
-          printf '%s\n' '[{"name":"same-binary","count":1024,"payload":1024,"writers":16,"ack_percent":50,"scans":0},{"name":"same-scan","count":512,"payload":65536,"writers":1,"ack_percent":50,"scans":16,"rotate_every":64}]' > "$E/aa-cases.json"
+          E="$RUNNER_TEMP/ack-evidence"
+          printf '%s\n' '[{"name":"same-binary","count":512,"payload":1024,"writers":8,"ack_percent":50,"scans":0},{"name":"same-ack","count":512,"payload":256,"writers":1,"ack_percent":100,"scans":16,"rotate_every":16}]' > "$E/aa-cases.json"
           python3 tests/e2eperf/observe.py --out "$E/host-before" -- python3 tests/e2eperf/compare.py --baseline "$E/worker-candidate" --candidate "$E/worker-candidate" --cases "$E/aa-cases.json" --pairs 5 --out "$E/aa-before"
-      - name: Multi-segment paired lifecycle measurements
+      - name: ACK-heavy sparse empty gzip and single-segment paired trials
         shell: bash
         run: |
           set -euo pipefail
-          E="$RUNNER_TEMP/scan-evidence"
-          python3 tests/e2eperf/observe.py --out "$E/host-segments" -- python3 tests/e2eperf/compare.py --baseline "$E/worker-baseline" --candidate "$E/worker-candidate" --cases tests/e2eperf/segment_cases.json --pairs 5 --out "$E/segment-paired"
-      - name: Existing single-segment and large-record guardrails
+          E="$RUNNER_TEMP/ack-evidence"
+          python3 tests/e2eperf/observe.py --out "$E/host-ack" -- python3 tests/e2eperf/compare.py --baseline "$E/worker-baseline" --candidate "$E/worker-candidate" --cases tests/e2eperf/ack_cases.json --pairs 5 --out "$E/ack-paired"
+      - name: Prior multi-segment data and large-record guardrails
         shell: bash
         run: |
           set -euo pipefail
-          E="$RUNNER_TEMP/scan-evidence"
-          python3 tests/e2eperf/observe.py --out "$E/host-guardrails" -- python3 tests/e2eperf/compare.py --baseline "$E/worker-baseline" --candidate "$E/worker-candidate" --cases tests/e2eperf/writer_cases.json --pairs 5 --out "$E/guardrails"
-      - name: Post-campaign A-A controls and timing qualification
+          E="$RUNNER_TEMP/ack-evidence"
+          python3 tests/e2eperf/observe.py --out "$E/host-segments" -- python3 tests/e2eperf/compare.py --baseline "$E/worker-baseline" --candidate "$E/worker-candidate" --cases tests/e2eperf/segment_cases.json --pairs 5 --out "$E/segment-guardrails"
+      - name: Post-campaign controls and unchanged timing qualification
         shell: bash
         run: |
           set -euo pipefail
-          E="$RUNNER_TEMP/scan-evidence"
+          E="$RUNNER_TEMP/ack-evidence"
           python3 tests/e2eperf/observe.py --out "$E/host-after" -- python3 tests/e2eperf/compare.py --baseline "$E/worker-candidate" --candidate "$E/worker-candidate" --cases "$E/aa-cases.json" --pairs 5 --out "$E/aa-after"
           python3 tests/e2eperf/qualify.py --before "$E/aa-before/report.json" --after "$E/aa-after/report.json" > "$E/timing-qualification.json"
           cat "$E/timing-qualification.json"
-      - name: Fixed-work separate CPU allocation heap and trace diagnostics
+      - name: Separate fixed-work CPU allocation heap and syscall trace evidence
         shell: bash
         run: |
           set -euo pipefail
-          E="$RUNNER_TEMP/scan-evidence"
+          E="$RUNNER_TEMP/ack-evidence"
           for side in baseline candidate; do
             for kind in cpu trace; do
-              python3 tests/e2eperf/run.py --binary "$E/worker-$side" --out "$E/$side-$kind" --count 512 --payload 65536 --writers 1 --ack-percent 50 --scans 64 --rotate-every 64 --diagnostics "$kind" > "$E/$side-$kind.log"
+              scans=512
+              if [ "$kind" = trace ]; then scans=128; fi
+              python3 tests/e2eperf/run.py --binary "$E/worker-$side" --out "$E/$side-$kind" --count 512 --payload 256 --writers 1 --ack-percent 100 --scans "$scans" --rotate-every 8 --diagnostics "$kind" > "$E/$side-$kind.log"
             done
             go tool pprof -top -nodecount=20 -sample_index=alloc_space -base="$E/$side-cpu/scan/alloc-before.pprof" "$E/worker-$side" "$E/$side-cpu/scan/alloc.pprof" > "$E/$side-alloc.txt"
             go tool pprof -top -nodecount=20 -sample_index=inuse_space "$E/worker-$side" "$E/$side-cpu/scan/heap.pprof" > "$E/$side-heap.txt"
@@ -122,26 +130,26 @@ jobs:
         if: always()
         shell: bash
         run: |
-          E="$RUNNER_TEMP/scan-evidence"
+          E="$RUNNER_TEMP/ack-evidence"
           mkdir -p "$E"
           cd "$E"
           find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
-      - name: Recompute all paired audits and displayed medians
+      - name: Recompute every accepted trial audit assessment and median
         shell: bash
         run: |
           set -euo pipefail
-          E="$RUNNER_TEMP/scan-evidence"
+          E="$RUNNER_TEMP/ack-evidence"
           python3 tests/e2eperf/verify.py --root "$E" \
-            --campaign segment-paired=worker-baseline,worker-candidate \
-            --campaign guardrails=worker-baseline,worker-candidate \
+            --campaign ack-paired=worker-baseline,worker-candidate \
+            --campaign segment-guardrails=worker-baseline,worker-candidate \
             --campaign aa-before=worker-candidate,worker-candidate \
-            --campaign aa-after=worker-candidate,worker-candidate > "$RUNNER_TEMP/verified-scan.json"
-          cat "$RUNNER_TEMP/verified-scan.json"
+            --campaign aa-after=worker-candidate,worker-candidate > "$RUNNER_TEMP/verified-ack.json"
+          cat "$RUNNER_TEMP/verified-ack.json"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
-          name: journal-scan-${{ github.event.pull_request.head.sha || github.sha }}
-          path: ${{ runner.temp }}/scan-evidence
+          name: journal-ack-${{ github.event.pull_request.head.sha || github.sha }}
+          path: ${{ runner.temp }}/ack-evidence
           retention-days: 14
           if-no-files-found: error
           include-hidden-files: true
