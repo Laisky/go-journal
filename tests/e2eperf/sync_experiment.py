@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Apply the one-file Sync hypothesis or prove coordination negative controls.
+"""Reproduce the one-file Sync experiment or prove coordination negative controls.
 
-Integration is experimental until the journal.go change is explicitly adopted.
+--apply is for an isolated historical worktree, never automatic production adoption.
 Mutants must compile, run the named test, and fail its intended assertion.
 """
 import argparse
@@ -16,7 +16,7 @@ def apply(source):
     text = path.read_text()
     field = '\tlastRotateAt  time.Time\n'
     entry = 'func (j *Journal) Sync() error {\n\tj.Lock()\n\tdefer j.Unlock()\n'
-    if text.count(field) != 1 or text.count(entry) != 1:
+    if not (source / 'sync_group.go').is_file() or text.count(field) != 1 or text.count(entry) != 1:
         raise ValueError('integration anchor changed; do not silently reinterpret the experiment')
     text = text.replace(field, field + '\tsyncGroup     syncBarrierGroup\n', 1)
     text = text.replace(entry, '''func (j *Journal) Sync() error {
@@ -39,17 +39,21 @@ def negative(source, out):
     out.mkdir(parents=True, exist_ok=False)
     original = (source / 'sync_group.go').read_text()
     tests = (source / 'sync_group_test.go').read_text()
+    completion = 'g.complete(err)' if 'g.complete(err)' in original else 'g.complete(f, err)'
+    reset = '\tg.active = nil\n'
+    if '\tg.running = false\n' in original:
+        reset += '\tg.running = false\n'
     variants = {
         'publish-after-unlock': (
-            '\t\tg.complete(f, err)\n\t\tlock.Unlock()\n',
-            '\t\tlock.Unlock()\n\t\tg.complete(f, err)\n',
+            '\t\t' + completion + '\n\t\tlock.Unlock()\n',
+            '\t\tlock.Unlock()\n\t\t' + completion + '\n',
             'TestSyncGroupPublishesBeforeWriterCanProceed',
             'old barrier remains joinable after releasing writer exclusion'),
         'hide-barrier-error': (
             '\tf.err = err\n', '\tf.err = nil\n',
             'TestSyncGroupSharesOnlyAnOverlappingBarrier', 'follower lost barrier error'),
         'cache-completed-barrier': (
-            '\tg.active = nil\n', '\t// mutant: keep completed barrier\n',
+            reset, '\t// mutant: keep completed barrier\n',
             'TestSyncGroupSharesOnlyAnOverlappingBarrier', 'sequential Sync reused a cached barrier'),
     }
     outcomes = []
