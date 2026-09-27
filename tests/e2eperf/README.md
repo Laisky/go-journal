@@ -4,10 +4,12 @@ An ordinary consumer of exported Journal APIs with real private data/ACK files,
 an independent fsynced loopback downstream, and repeated process restart.
 PR #10 targets `master`; do not merge or deploy automatically.
 
-Current incremental baseline: `df475e4f61c2028c579f9fe4b091c83823ff3184`.
-See [scan-local reuse](SCAN_REUSE.md), [rejected writer-buffer candidates](WRITER_RESULTS.md),
-[earlier Sync iteration](SYNC_RESULTS.md), and [historical ID-scan results](RESULTS.md).
-Keep those baselines separate; do not attribute earlier improvements to a later patch.
+Current incremental baseline: `71790780de0b665e1c33b2583c424fcc770944b2`.
+Start with [the consolidated checkpoint](STATUS.md) and [ACK reuse](ACK_REUSE.md).
+Earlier [data-reader reuse](SCAN_REUSE.md), [rejected writer buffers](WRITER_RESULTS.md),
+[Sync](SYNC_RESULTS.md), and [ID-scan results](RESULTS.md) keep their own baselines.
+Do not attribute earlier improvements to a later patch. The PR body identifies
+the latest verified head, qualification result and artifact.
 
 ## Lifecycle and correctness boundary
 
@@ -26,10 +28,11 @@ Identical retries are counted, not hidden or described as exactly-once.
 
 `negative.py` detects executable omitted-append/ACK/transfer mutants;
 `sync_experiment.py --negative` checks barrier ordering/error/cache mutants;
-`segment_negative.py` checks a no-op Rotate against actual segment files. A
-compilation error, timeout or missing test is not an accepted negative control.
-Existing immediate-crash, corruption, gzip-checksum and sequence tests remain.
-This does not certify physical power loss or exhaustive random-point crashes.
+`segment_negative.py` checks a no-op Rotate against actual segment files;
+`ack_negative.py` checks a stale per-file absolute ACK base. Compilation errors,
+timeouts and missing tests are not accepted negative controls. Existing
+immediate-crash, corruption, gzip-checksum and sequence tests remain. This does
+not certify physical power loss or exhaustive random-point crashes.
 
 ## Build a fixed worker and run
 
@@ -60,7 +63,7 @@ compiler, dependencies, flags and case definitions. Historical workers are not
 interchangeable. An old artifact must be audited with its matching trusted driver.
 
 ```sh
-BASE=df475e4f61c2028c579f9fe4b091c83823ff3184
+BASE=71790780de0b665e1c33b2583c424fcc770944b2
 git worktree add --detach "$E/baseline-src" "$BASE"
 cmp go.mod "$E/baseline-src/go.mod"
 cmp go.sum "$E/baseline-src/go.sum"
@@ -68,7 +71,7 @@ cp tests/e2eperf/*.go "$E/baseline-src/tests/e2eperf/"
 (cd "$E/baseline-src" && go build -mod=readonly -trimpath \
   -o "$E/worker-baseline" ./tests/e2eperf)
 python3 tests/e2eperf/compare.py --baseline "$E/worker-baseline" \
-  --candidate "$E/worker" --cases tests/e2eperf/segment_cases.json \
+  --candidate "$E/worker" --cases tests/e2eperf/ack_cases.json \
   --pairs 5 --out "$E/paired"
 python3 tests/e2eperf/report.py "$E/paired/report.json"
 ```
@@ -111,7 +114,7 @@ loads surviving an interrupted owner; guards require Linux and non-setuid progra
 ```sh
 python3 tests/e2eperf/observe.py --out "$E/host" -- \
   python3 tests/e2eperf/compare.py --baseline "$E/worker-baseline" \
-    --candidate "$E/worker" --cases tests/e2eperf/segment_cases.json \
+    --candidate "$E/worker" --cases tests/e2eperf/ack_cases.json \
     --pairs 5 --out "$E/observed-pairs"
 ```
 
@@ -127,8 +130,8 @@ it is not proof of exclusive resources, equivalence or universal speedup.
 ```sh
 for kind in cpu trace contention; do
   python3 tests/e2eperf/run.py --binary "$E/worker" \
-    --out "$E/diagnostic-$kind" --count 512 --payload 65536 \
-    --writers 1 --ack-percent 50 --rotate-every 64 --scans 64 \
+    --out "$E/diagnostic-$kind" --count 512 --payload 256 \
+    --writers 1 --ack-percent 100 --rotate-every 8 --scans 64 \
     --diagnostics "$kind"
 done
 ```
