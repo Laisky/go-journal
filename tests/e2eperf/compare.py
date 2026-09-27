@@ -13,6 +13,7 @@ import subprocess
 import sys
 
 from report import analyze
+from supervised_exec import install_signal_handlers
 
 
 def trial_deadline(case):
@@ -23,9 +24,20 @@ def trial_deadline(case):
 
 
 def run_supervisor(cmd, log, timeout):
-    process = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+    guarded = [sys.executable, str(Path(__file__).with_name("supervised_exec.py")), str(os.getpid()), *cmd]
+    process = subprocess.Popen(guarded, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
 
     def terminate():
+        # Nested controllers own different groups. Give their signal handlers
+        # a chance to cascade cleanup before the final hard group kill.
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        try:
+            process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            pass
         try:
             os.killpg(process.pid, signal.SIGKILL)
         except ProcessLookupError:
@@ -43,6 +55,7 @@ def run_supervisor(cmd, log, timeout):
 
 
 def main():
+    install_signal_handlers()
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--baseline', type=Path, required=True)
     p.add_argument('--candidate', type=Path, required=True)
