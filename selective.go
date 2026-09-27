@@ -173,3 +173,32 @@ func scanReplayValue(b []byte, depth int) ([]byte, bool) {
 		return b[size:], true
 	}
 }
+
+// readRecordID validates a complete canonical buffered record without building
+// its payload. Unlike replay, the maximum-ID scan has always decoded into a NEW
+// Data for each record: missing fields do not inherit predecessor state. The
+// fallback deliberately retains that behavior and all generated-decoder errors.
+// No ACK lookup, cleanup or read-ahead beyond the ordinary buffer occurs here.
+func (dec *DataDecoder) readRecordID() (int64, error) {
+	r := dec.reader.R
+	if r.Buffered() == 0 {
+		if _, err := r.Peek(1); err != nil {
+			return 0, err
+		}
+	}
+	n := r.Buffered()
+	if n > maxSelectiveRecordBytes {
+		n = maxSelectiveRecordBytes
+	}
+	b, err := r.Peek(n)
+	if err != nil {
+		return 0, err
+	}
+	if id, size, ok := inspectReplayRecord(b); ok {
+		_, err = r.Skip(size)
+		return id, err
+	}
+	var data Data
+	err = dec.Read(&data)
+	return data.ID, err
+}

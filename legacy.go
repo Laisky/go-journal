@@ -385,8 +385,8 @@ func maxDataID(name string, newest bool) (int64, error) {
 	}
 	var high int64
 	for {
-		d := &Data{}
-		if err := decoder.Read(d); err != nil {
+		id, readErr := decoder.readRecordID()
+		if err := readErr; err != nil {
 			if err == io.EOF {
 				return high, nil
 			}
@@ -399,8 +399,8 @@ func maxDataID(name string, newest bool) (int64, error) {
 			}
 			return 0, errors.Wrapf(err, "read recovery data %s", name)
 		}
-		if d.ID > high {
-			high = d.ID
+		if id > high {
+			high = id
 		}
 	}
 }
