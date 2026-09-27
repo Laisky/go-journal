@@ -73,8 +73,8 @@ func (l *LegacyLoader) Reset(dataFNames, idsFNames []string) {
 	defer l.Unlock()
 
 	l.logger.Debug("reset legacy loader",
-		zap.Strings("data_files", dataFNames),
-		zap.Strings("ids_files", idsFNames))
+		zap.Strings("data_files", dataFnames),
+		zap.Strings("ids_files", idsFnames))
 	// A new snapshot invalidates a partially consumed cursor. Restarting the
 	// scan can repeat complete records, but must never delete an unread segment.
 	if l.dataFp != nil {
@@ -87,9 +87,9 @@ func (l *LegacyLoader) Reset(dataFNames, idsFNames []string) {
 	l.isNeedReload = true
 	l.cleanup = nil
 	l.dataFileIdx, l.dataFilesLen = -1, 0
-	l.dataFNames = dataFNames
-	l.idsFNames = idsFNames
-	l.isReadyReload = len(dataFNames) != 0 || len(idsFNames) != 0
+	l.dataFNames = dataFnames
+	l.idsFNames = idsFnames
+	l.isReadyReload = len(dataFnames) != 0 || len(idsFnames) != 0
 }
 
 // GetIdsLen return length of ids
@@ -211,13 +211,14 @@ func (l *LegacyLoader) LoadMaxId() (maxId int64, err error) {
 	defer l.RUnlock()
 	l.logger.Debug("LoadMaxId...")
 	startTs := utils.Clock.GetUTCNow()
+	var ackBuffers scanIDBuffers
 	for _, name := range l.idsFNames {
 		var id int64
-		if err := readIDsFile(name, func(dec *IdsDecoder) error {
+		if err := readIDsFileWithBuffers(name, func(dec *IdsDecoder) error {
 			var err error
 			id, err = dec.LoadMaxId()
 			return err
-		}); err != nil {
+		}, &ackBuffers); err != nil {
 			return 0, err
 		}
 		if id > maxId {
@@ -251,8 +252,9 @@ func (l *LegacyLoader) LoadAllids(ids Int64SetItf) error {
 }
 
 func (l *LegacyLoader) loadAllIDs(ids Int64SetItf) error {
+	var ackBuffers scanIDBuffers
 	for _, name := range l.idsFNames {
-		if err := readIDsFile(name, func(dec *IdsDecoder) error { return dec.ReadAllToInt64Set(ids) }); err != nil {
+		if err := readIDsFileWithBuffers(name, func(dec *IdsDecoder) error { return dec.ReadAllToInt64Set(ids) }, &ackBuffers); err != nil {
 			return err
 		}
 	}
@@ -262,30 +264,7 @@ func (l *LegacyLoader) loadAllIDs(ids Int64SetItf) error {
 // Scope each descriptor to one file rather than deferring all closes until the
 // complete snapshot has been scanned. Unused zero-byte gzip files are valid.
 func readIDsFile(name string, consume func(*IdsDecoder) error) (err error) {
-	fp, err := os.Open(name)
-	if err != nil {
-		return errors.Wrap(err, "open acknowledgement file")
-	}
-	defer func() {
-		if closeErr := fp.Close(); err == nil && closeErr != nil {
-			err = closeErr
-		}
-	}()
-	info, err := fp.Stat()
-	if err != nil {
-		return err
-	}
-	if info.Size() == 0 {
-		return nil
-	}
-	dec, err := NewIdsDecoder(fp, isFileGZ(name))
-	if err != nil {
-		return errors.Wrapf(err, "decode acknowledgement header %s", name)
-	}
-	if err := consume(dec); err != nil {
-		return errors.Wrapf(err, "decode acknowledgement records %s", name)
-	}
-	return nil
+	return readIDsFileWithBuffers(name, consume, nil)
 }
 
 // Clean remove old legacy files
@@ -308,12 +287,13 @@ func (l *LegacyLoader) Clean() error {
 		// Decode before removing anything: damaged ACKs are not cleanup permission.
 		var frontierName string
 		var frontier int64 = -1
+		var ackBuffers scanIDBuffers
 		for _, name := range l.idsFNames {
 			var maxID int64
-			if err := readIDsFile(name, func(dec *IdsDecoder) (err error) {
+			if err := readIDsFileWithBuffers(name, func(dec *IdsDecoder) (err error) {
 				maxID, err = dec.LoadMaxId()
 				return err
-			}); err != nil {
+			}, &ackBuffers); err != nil {
 				return err
 			}
 			if maxID > frontier {
