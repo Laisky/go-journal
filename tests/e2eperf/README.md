@@ -1,24 +1,41 @@
 # Observable public-API journal E2E performance
 
-An ordinary consumer of exported Journal APIs, not an internal microbenchmark. It uses real private data/ACK files, an independent loopback downstream, and repeated process restart. PR #9 has merged; PR #10 targets `master`. The immutable pre-optimization measurement baseline is `fc156a60fafc21dd36ad534e5b8f7a971beccec8`.
+An ordinary consumer of exported Journal APIs with real private data/ACK files,
+an independent fsynced loopback downstream, and repeated process restart.
+PR #10 targets `master`; do not merge or deploy automatically.
 
-See [measured results, accepted/rejected changes, and evidence hashes](RESULTS.md). Do not merge or deploy automatically.
+Current incremental baseline: `df475e4f61c2028c579f9fe4b091c83823ff3184`.
+See [scan-local reuse](SCAN_REUSE.md), [rejected writer-buffer candidates](WRITER_RESULTS.md),
+[earlier Sync iteration](SYNC_RESULTS.md), and [historical ID-scan results](RESULTS.md).
+Keep those baselines separate; do not attribute earlier improvements to a later patch.
 
-## What one trial proves
+## Lifecycle and correctness boundary
 
-The lifecycle is **seed → SIGKILL → scan → transfer → SIGKILL → deliver → verify**. Scanning can be disabled with `--scans 0`.
+**seed → SIGKILL → scan → transfer → SIGKILL → deliver → verify**.
+Scanning is optional with `--scans 0`. Concurrent writers append deterministic
+IDs/payloads and call Sync. The independent Python peer checks complete messages
+and fsyncs its ledger before issuing a matching ID/hash/durable receipt; only
+then does the worker WriteId and Sync the ACK.
 
-Concurrent writers append generated IDs/payloads and call `Sync`. For the selected ACK subset, the independent Python HTTP peer validates the complete payload and fsyncs its own ledger **before** returning a matching ID/hash/durable receipt. Only then does the Go worker call `WriteId` and `Sync`.
+The controller kills seed and transfer only after their synchronized checkpoint.
+A new process copies and synchronizes each pending record before requesting the
+next record or EOF cleanup. Final delivery reconciles all expected identities
+and hashes. The last open must preserve the ID frontier with no pending records.
+Queue admission, Flush, Close and arbitrary HTTP success are not durability.
+Identical retries are counted, not hidden or described as exactly-once.
 
-The controller kills seed and transfer workers only after their synchronized checkpoint. A new process recovers every pending record, copies and synchronizes it **before** requesting the next record or EOF cleanup, and is killed again. Final delivery reconciles the independently generated expected IDs and hashes with the peer ledger. The last open must retain the maximum ID and contain no pending record.
+`negative.py` detects executable omitted-append/ACK/transfer mutants;
+`sync_experiment.py --negative` checks barrier ordering/error/cache mutants;
+`segment_negative.py` checks a no-op Rotate against actual segment files. A
+compilation error, timeout or missing test is not an accepted negative control.
+Existing immediate-crash, corruption, gzip-checksum and sequence tests remain.
+This does not certify physical power loss or exhaustive random-point crashes.
 
-Queue admission, `Flush`, `Close`, and arbitrary HTTP success are not durable completion. Identical downstream retries are counted, not silently deduplicated or called exactly-once. `negative.py` builds three real executable mutants (omitted append, ACK, and transfer); each must fail its intended independent assertion, not merely fail compilation.
+## Build a fixed worker and run
 
-This is a synchronized-checkpoint process-crash test, **not** random-point crash or physical power-loss certification. Keep the existing crash, corruption, gzip-checksum and sequence-state tests.
-
-## Build and run
-
-Requirements: Linux with `/proc`, Python 3.10+, the Go version in `go.mod` (CI pins Go 1.27.1), and enough private storage. Run from the repository root. Use a new output directory for every trial; failures remain on disk.
+Linux with `/proc`, Python 3.10+, the module's Go version (CI pins 1.27.1), and
+private storage are required. Use fresh output paths. The controller bounds
+source work to 2 GiB; total evidence size and peak memory are separate limits.
 
 ```sh
 export GOTOOLCHAIN=local GOMAXPROCS=4
@@ -26,115 +43,140 @@ E=$(mktemp -d /tmp/journal-e2e.XXXXXXXX)
 go mod download
 go mod verify
 go build -mod=readonly -trimpath -o "$E/worker" ./tests/e2eperf
-
-python3 tests/e2eperf/run.py --binary "$E/worker" \
-  --out "$E/smoke" --count 512 --payload 1024 --writers 8 \
-  --ack-percent 50 --scans 4
+python3 tests/e2eperf/run.py --binary "$E/worker" --out "$E/smoke" \
+  --count 512 --payload 1024 --writers 8 --ack-percent 50 --scans 4
 python3 tests/e2eperf/run.py --audit-only "$E/smoke"
 python3 -m unittest discover -s tests/e2eperf -p 'test_*.py' -v
-python3 tests/e2eperf/negative.py --out "$E/negative"
 ```
 
-`--count` is the number of source records, not repeated scan operations. `--payload` excludes the identity/Unicode prefix. A scan trial performs `writers × scans` full maximum-ID scans; do not report these as newly delivered messages.
+`count` means source records; payload excludes the identity/Unicode prefix.
+A scan performs `writers × scans` complete maximum-ID scans, not that many new
+deliveries. Report phase work and whole-lifecycle work separately.
 
-## Build a fair baseline
+## Fair paired comparisons
 
-Use the **same current worker source**, compiler, dependency graph, flags and workload against both library revisions. Building different historical harnesses is not a valid comparison.
+Compile the same current worker against both library revisions, with identical
+compiler, dependencies, flags and case definitions. Historical workers are not
+interchangeable. An old artifact must be audited with its matching trusted driver.
 
 ```sh
-BASE=fc156a60fafc21dd36ad534e5b8f7a971beccec8
+BASE=df475e4f61c2028c579f9fe4b091c83823ff3184
 git worktree add --detach "$E/baseline-src" "$BASE"
 cmp go.mod "$E/baseline-src/go.mod"
 cmp go.sum "$E/baseline-src/go.sum"
-mkdir -p "$E/baseline-src/tests/e2eperf"
 cp tests/e2eperf/*.go "$E/baseline-src/tests/e2eperf/"
 (cd "$E/baseline-src" && go build -mod=readonly -trimpath \
   -o "$E/worker-baseline" ./tests/e2eperf)
-go version -m "$E/worker" > "$E/build-candidate.txt"
-go version -m "$E/worker-baseline" > "$E/build-baseline.txt"
-git rev-parse HEAD HEAD^{tree} > "$E/source.txt"
-
-python3 tests/e2eperf/compare.py \
-  --baseline "$E/worker-baseline" --candidate "$E/worker" \
-  --cases tests/e2eperf/cases.json --pairs 5 --out "$E/paired"
+python3 tests/e2eperf/compare.py --baseline "$E/worker-baseline" \
+  --candidate "$E/worker" --cases tests/e2eperf/segment_cases.json \
+  --pairs 5 --out "$E/paired"
 python3 tests/e2eperf/report.py "$E/paired/report.json"
 ```
 
-The comparison alternates AB/BA ordering, retains every observation and failure, and independently re-audits each lifecycle before aggregation. Only accepted synthetic WAL files are removed to bound storage; observations, process results and the independent ledger remain. A controller timeout terminates its entire process group, including an active worker, and records failure rather than silently retrying it.
+AB/BA ordering alternates. Every result is independently audited before
+aggregation; failures are retained, never replaced. Only accepted synthetic WAL
+files are removed; observations, peer ledgers and process evidence remain.
 
-## Load matrix
-
-`stress.py` freezes a bounded cross-product of record size, concurrent writers, ACK ratio and codec. Its default matrix has six cases. Preview large campaigns before execution: no more than 36 cases or 10 pairs per campaign, with a 2 GiB synthetic data-work bound per trial. This is not a total artifact-size or memory guarantee.
+## Multi-segment and concurrency loads
 
 ```sh
-python3 tests/e2eperf/stress.py \
-  --baseline "$E/worker-baseline" --candidate "$E/worker" \
-  --out "$E/matrix" --count 4096 --payloads 256,16384 \
-  --writers 1,4,16 --ack-percents 0,50,100 \
-  --codecs plain,gzip --scans 4 --pairs 5 --generate-only
+python3 tests/e2eperf/run.py --binary "$E/worker" --out "$E/segments" \
+  --count 512 --payload 65536 --writers 1 --ack-percent 50 \
+  --rotate-every 64 --scans 16
 
-# Execute 12 cases, including all-pending and zero-pending recovery.
-python3 tests/e2eperf/stress.py \
-  --baseline "$E/worker-baseline" --candidate "$E/worker" \
-  --out "$E/concurrency" --count 512 --payloads 1024 \
-  --writers 1,8,32 --ack-percents 0,100 \
+python3 tests/e2eperf/stress.py --baseline "$E/worker-baseline" \
+  --candidate "$E/worker" --out "$E/concurrency" --count 512 \
+  --payloads 1024 --writers 1,8,32 --ack-percents 0,100 \
   --codecs plain,gzip --scans 0 --pairs 5
 ```
 
-These are **fixed-work, closed-loop** loads: each writer waits for synchronization and its selected delivery/ACK before admitting another record. They identify contention and resource changes, not an open-loop offered-rate SLO or sustained-capacity certificate. The payload is deterministic and highly compressible; gzip results do not represent high-entropy production traffic. Use representative storage, payload distributions and long-running offered-rate workloads before sizing production.
+`rotate-every` calls public Rotate after each N completed seed operations, capped
+at 256 rotations. The count is audited; physical segment/replay tests reject fake
+rotation counters. Per-segment preallocation is bounded by the frozen workload
+formula in [SCAN_REUSE.md](SCAN_REUSE.md), identically for both revisions.
+`stress.py` caps matrices at 36 cases and ten pairs; `--generate-only` previews one.
 
-## Capture profiles separately from timings
+These are fixed-work, closed-loop loads. Writers wait for their durability and
+selected delivery/ACK steps. Payloads are deterministic and highly compressible;
+representative entropy, open-loop arrival rates, sustained saturation and long
+soaks require additional workloads. No production capacity claim follows.
 
-`--diagnostics cpu`, `trace`, or `contention` profiles each worker stage across open, frontier discovery, append/Sync, replay and seal. CPU and execution tracing use separate runs. Contention sampling is intentionally expensive. Diagnostic runs are marked `diagnostic_only`; both comparison and reporting reject them for performance acceptance.
+## Environment observation and timing qualification
+
+`observe.py` samples host CPU/IO pressure, disk counters, dirty pages and mounted
+cgroup counters without instrumenting the Go worker. Missing counters are errors,
+not zero load. Parent-death guards and TERM/KILL cascade tests prevent nested
+loads surviving an interrupted owner; guards require Linux and non-setuid programs.
+
+```sh
+python3 tests/e2eperf/observe.py --out "$E/host" -- \
+  python3 tests/e2eperf/compare.py --baseline "$E/worker-baseline" \
+    --candidate "$E/worker" --cases tests/e2eperf/segment_cases.json \
+    --pairs 5 --out "$E/observed-pairs"
+```
+
+CI runs identical-binary controls before and after the campaign. `qualify.py`
+requires the entire lifecycle/p99 paired interval inside [0.9, 1.1] and max/min
+sample span at most 1.25. A failed qualification is retained, not rerun until green.
+Correctness/byte-count evidence remains useful, but timing claims must explicitly
+state the qualification failure. Qualification covers only its control workloads;
+it is not proof of exclusive resources, equivalence or universal speedup.
+
+## Profiles: separate from acceptance timings
 
 ```sh
 for kind in cpu trace contention; do
   python3 tests/e2eperf/run.py --binary "$E/worker" \
-    --out "$E/diagnostic-$kind" --count 2048 --payload 16384 \
-    --writers 8 --ack-percent 50 --scans 4 --diagnostics "$kind"
+    --out "$E/diagnostic-$kind" --count 512 --payload 65536 \
+    --writers 1 --ack-percent 50 --rotate-every 64 --scans 64 \
+    --diagnostics "$kind"
 done
 ```
 
-Each profiled worker process writes before/after allocation profiles, a post-GC live-heap profile, and configuration metadata. CPU mode adds `cpu.pprof`; trace mode adds `trace.out`; contention mode adds `block.pprof` and `mutex.pprof`. Profiles are finalized **before** publishing the checkpoint, so intentional SIGKILL does not truncate them. Existing evidence files are never overwritten.
+Each profiled worker includes open, frontier, append/Sync, replay and seal. It
+writes before/after allocations, post-GC live heap and profiler metadata; CPU
+adds `cpu.pprof`, trace adds `trace.out`, contention adds block/mutex profiles.
+Profiles close before intentional SIGKILL. CPU and tracing use separate runs.
+All diagnostic trials are marked and rejected from paired timing acceptance.
 
-Trace regions identify `WriteData`, `Sync/data`, `downstream/fsync-receipt`, `WriteId`, `Sync/ack`, `LoadLegacyBuf`, and replay equivalents. Phase labels distinguish top-level operations within a worker profile. Background goroutines may retain their creation-phase label; that label is not exclusive ownership of asynchronous work.
+Trace regions include WriteData, Sync/data, downstream/fsync-receipt, WriteId,
+Sync/ack, LoadLegacyBuf and Rotate/seed. Phase labels do not exclusively own
+background goroutines created in a phase. Worker profiles omit Python-peer CPU;
+the peer's persistence cost can dominate delivery.
 
-### Interactive CPU flame graphs and heap views
-
-These commands start local-only interactive pprof views. Select Flame Graph or Graph in the browser. Keep the exact measured executable for symbolization.
+### Interactive flame graph, allocation and live-heap views
 
 ```sh
 go tool pprof -http=127.0.0.1:8081 -no_browser \
-  "$E/worker" "$E/diagnostic-cpu/seed/cpu.pprof"
-
+  "$E/worker" "$E/diagnostic-cpu/scan/cpu.pprof"
 go tool pprof -http=127.0.0.1:8082 -no_browser -sample_index=alloc_space \
   -base="$E/diagnostic-cpu/scan/alloc-before.pprof" \
   "$E/worker" "$E/diagnostic-cpu/scan/alloc.pprof"
-
 go tool pprof -http=127.0.0.1:8083 -no_browser -sample_index=inuse_space \
-  "$E/worker" "$E/diagnostic-cpu/seed/heap.pprof"
+  "$E/worker" "$E/diagnostic-cpu/scan/heap.pprof"
+go tool trace -http=127.0.0.1:8084 "$E/diagnostic-trace/scan/trace.out"
+go tool trace -pprof=syscall "$E/diagnostic-trace/scan/trace.out" > "$E/syscall.pprof"
+go tool pprof -top "$E/worker" "$E/syscall.pprof"
 ```
 
-Allocation churn and retained heap are different metrics. Subtract the before profile when analyzing allocations. The live heap is captured before closing the journal and excludes later result-file serialization. For short phases, increase work or use a separate `--profile-seconds 5` scan diagnostic; never mix its variable operation count into fixed-work comparisons.
+Use pprof's Flame Graph/Graph menus and the exact executable. Allocation churn
+is not retained heap; subtract the before profile. Live heap is captured before
+journal Close and result serialization. Summed goroutine wait time is not wall
+latency. A duration-based `--profile-seconds` diagnostic has variable work and
+must not enter fixed-work comparisons.
 
-### Scheduler, syscall and lock bottlenecks
+## Retained evidence
 
-```sh
-go tool trace -http=127.0.0.1:8084 "$E/diagnostic-trace/seed/trace.out"
-go tool trace -pprof=sync "$E/diagnostic-trace/seed/trace.out" > "$E/sync.pprof"
-go tool trace -pprof=syscall "$E/diagnostic-trace/seed/trace.out" > "$E/syscall.pprof"
-go tool pprof -top "$E/worker" "$E/sync.pprof"
-go tool pprof -top "$E/worker" "$E/diagnostic-contention/seed/mutex.pprof"
-```
+`result.json` contains monotonic intervals, exact work, timestamps and counters.
+`summary.json` adds latency percentiles, CPU, allocations, GC cycles, mallocs and
+process-high-water RSS. VmHWM is cumulative per process, not reset per phase.
+Reports keep all samples, paired ratios and exploratory 95% bootstrap intervals.
+The 5% improvement/regression labels are not multiplicity-corrected; inspect
+absolute effects, controls and lifecycle guardrails. Inconclusive is not equivalent.
 
-Summed blocked-goroutine time can exceed elapsed time; it is not a percentage of wall-clock latency. The independent Python peer performs real fsyncs and can dominate delivery throughput; worker profiles do not measure the peer's CPU.
-
-## Evidence and acceptance
-
-`result.json` retains monotonic intervals, exact operation counts, per-record timestamps and process observations. `summary.json` reports p50/p95/p99 operation latency, CPU, allocations, RSS and lifecycle throughput. `environment.json` records affinity/quota, GOMAXPROCS, filesystem mounts, CPU information and executable SHA256. RSS is process VmHWM: a cumulative high-water mark, not independently reset per phase.
-
-Paired reports retain individual samples and candidate/baseline ratios. Deterministic 95% paired-bootstrap intervals are **exploratory**, not multiplicity-corrected proofs. Fewer than five pairs, zero denominators, incomplete work, failures and diagnostic contamination cannot be called measured improvements. The `improved`/`regressed` labels use a 5% relative threshold; inspect absolute effects and whole-lifecycle guardrails. Inconclusive does not mean equivalent.
-
-Accept changes only after behavior/race/fuzz/negative controls and matched measurements. Keep regressions visible; investigate small noisy effects instead of deleting them. Do not change synchronization cadence, ACK order, generated-decoder error policy, replay sequence state, dependencies or wire format to obtain a benchmark win.
-
-CI publishes source, executables, module graph, every observation, profiles, tests and SHA256SUMS. Download artifacts before their 14-day retention expires. The workflow includes hidden synthetic evidence files so the complete manifest can be checked. A passing job means the campaign completed correctly, not that every metric improved or production capacity was certified. [RESULTS.md](RESULTS.md) records the measured scope, decisions and remaining limitations.
+`verify.py` recomputes manifests, binary identity, options, audits, assessments and
+displayed medians. Store its output outside the immutable evidence directory.
+CI includes hidden synthetic files so SHA256SUMS can be checked completely.
+Artifacts retain sources, executables, module graph, profiles and observations
+for fourteen days. Preserve a verified copy. Passing CI means the campaign and
+correctness checks completed, not that every performance metric improved.
