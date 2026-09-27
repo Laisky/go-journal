@@ -31,12 +31,13 @@ import (
 type options struct {
 	Mode, Dir, Out, Sink, Token, Profile       string
 	Count, Payload, Writers, AckPercent, Scans int
-	Gzip, Hold                                 bool
-	ScanSeconds                                time.Duration
+	RotateEvery                              int
+	Gzip, Hold                               bool
+	ScanSeconds                              time.Duration
 }
 type observation struct {
-	ID                                       int64  `json:"id"`
-	Hash                                     string `json:"hash"`
+	ID                                     int64  `json:"id"`
+	Hash                                   string `json:"hash"`
 	Begin, Written, Durable, Received, Acked int64
 }
 type usage struct {
@@ -47,11 +48,11 @@ type usage struct {
 	RSSKiB  int64   `json:"peak_rss_kib"`
 }
 type phase struct {
-	Name          string `json:"name"`
-	Begin, End    int64
+	Name       string `json:"name"`
+	Begin, End int64
 	Before, After usage
-	Ops           int64   `json:"ops"`
-	LatencyNS     []int64 `json:"latency_ns"`
+	Ops        int64   `json:"ops"`
+	LatencyNS  []int64 `json:"latency_ns"`
 }
 type result struct {
 	Diagnostic  string `json:"diagnostic,omitempty"`
@@ -59,6 +60,7 @@ type result struct {
 	Mode        string        `json:"mode"`
 	Count       int           `json:"count"`
 	High        int64         `json:"high"`
+	Rotations   int64         `json:"rotations"`
 	Phases      []phase       `json:"phases"`
 	Records     []observation `json:"records"`
 }
@@ -174,7 +176,7 @@ func deliver(client *http.Client, o options, id int64, body string) error {
 
 func seed(j *journal.Journal, o options, r *result, client *http.Client) error {
 	r.Records = make([]observation, o.Count)
-	var next atomic.Int64
+	var next, completed, rotations atomic.Int64
 	var wg sync.WaitGroup
 	var first error
 	var em sync.Mutex
@@ -218,6 +220,14 @@ func seed(j *journal.Journal, o options, r *result, client *http.Client) error {
 					}
 					v.Acked = time.Since(epoch).Nanoseconds()
 				}
+				if err == nil && o.RotateEvery > 0 && completed.Add(1)%int64(o.RotateEvery) == 0 {
+					region = r.diagnostics.region("Rotate/seed")
+					err = j.Rotate(context.Background())
+					region.end()
+					if err == nil {
+						rotations.Add(1)
+					}
+				}
 				if err != nil {
 					em.Lock()
 					if first == nil {
@@ -231,6 +241,7 @@ func seed(j *journal.Journal, o options, r *result, client *http.Client) error {
 		}()
 	}
 	wg.Wait()
+	r.Rotations = rotations.Load()
 	return first
 }
 
@@ -426,11 +437,12 @@ func main() {
 	flag.IntVar(&o.Writers, "writers", 4, "concurrent public API callers")
 	flag.IntVar(&o.AckPercent, "ack-percent", 50, "deterministic sparse ACK selection")
 	flag.IntVar(&o.Scans, "scans", 1, "LoadMaxId repetitions per scan worker")
+	flag.IntVar(&o.RotateEvery, "rotate-every", 0, "rotate after each N completed seed operations; zero disables")
 	flag.DurationVar(&o.ScanSeconds, "scan-duration", 0, "diagnostic duration instead of fixed scan count")
 	flag.BoolVar(&o.Gzip, "gzip", false, "gzip journal")
 	flag.BoolVar(&o.Hold, "hold", false, "hold durable checkpoint until supervisor SIGKILL")
 	flag.Parse()
-	if o.Dir == "" || o.Out == "" || o.Count < 1 || o.Count > 1000000 || o.Payload < 0 || o.Payload > 4<<20 || o.Writers < 1 || o.Writers > 128 || o.AckPercent < 0 || o.AckPercent > 100 || o.Scans < 0 || (o.Mode == "scan" && o.Scans == 0) || o.Scans > 10000 || o.ScanSeconds < 0 || o.ScanSeconds > 10*time.Minute {
+	if o.Dir == "" || o.Out == "" || o.Count < 1 || o.Count > 1000000 || o.Payload < 0 || o.Payload > 4<<20 || o.Writers < 1 || o.Writers > 128 || o.AckPercent < 0 || o.AckPercent > 100 || o.Scans < 0 || (o.Mode == "scan" && o.Scans == 0) || o.Scans > 10000 || o.ScanSeconds < 0 || o.ScanSeconds > 10*time.Minute || o.RotateEvery < 0 || o.RotateEvery > o.Count || (o.RotateEvery > 0 && o.Count/o.RotateEvery > 256) {
 		fmt.Fprintln(os.Stderr, "invalid options")
 		os.Exit(2)
 	}
