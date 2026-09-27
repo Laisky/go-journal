@@ -108,7 +108,6 @@ class Peer:
                             view = view[n:]
                         os.fsync(owner.fp.fileno())
                         owner.rows.append(row)
-                    # Receipt follows actual fsync of this independent ledger.
                     response = json.dumps({'id': identity, 'hash': value_hash, 'durable': True}).encode()
                     self.send_response(200)
                 except Exception as exc:
@@ -156,7 +155,10 @@ def launch(binary, root, mode, options, peer, *, hold=False, scan_duration=0):
     if hold:
         args.append('--hold')
     if scan_duration:
-        args += ['--scan-duration', str(scan_duration) + 's', '--profile', 'diagnostic']
+        args += ['--scan-duration', str(scan_duration) + 's']
+    kind = options.get('diagnostics') or ('diagnostic' if scan_duration else '')
+    if kind:
+        args += ['--profile', kind]
     save(out / 'command.json', args)
     samples = []
     started = time.monotonic_ns()
@@ -171,7 +173,6 @@ def launch(binary, root, mode, options, peer, *, hold=False, scan_duration=0):
                 except (FileNotFoundError, ProcessLookupError):
                     pass
                 if hold and (out / 'result.json').exists() and b'CHECKPOINT\n' in (out / 'worker.log').read_bytes():
-                    # No graceful Close: verify recovery of the synchronized state.
                     process.kill()
                     break
                 time.sleep(.02)
@@ -208,8 +209,6 @@ def check_phases(result):
             a, b = p['Before'][counter], p['After'][counter]
             require(type(a) in (int, float) and type(b) in (int, float) and
                     math.isfinite(a) and math.isfinite(b) and 0 <= a <= b, 'invalid resource counter')
-        # /proc RSS accounting is sampled and can lag; unlike CPU/alloc counters,
-        # do not require reported VmHWM observations to be monotonic.
         for endpoint in ('Before', 'After'):
             rss = p[endpoint]['peak_rss_kib']
             require(type(rss) is int and rss > 0, 'missing RSS observation')
@@ -228,6 +227,7 @@ def audit_data(options, results, processes, rows, errors):
     for mode in ('seed', 'transfer', 'deliver', 'verify'):
         result = results[mode]
         require(result['mode'] == mode and result['count'] == n, 'wrong workload/stage')
+        require(result.get('diagnostic', '') == options.get('diagnostics', ''), 'diagnostic metadata mismatch')
         process = processes[mode]
         require(process['returncode'] == (-9 if mode in ('seed', 'transfer') else 0), 'wrong process exit')
         require(process['held'] == (mode in ('seed', 'transfer')), 'wrong checkpoint mode')
@@ -268,6 +268,8 @@ def audit(root):
     if options['scans']:
         s = read(root / 'scan/result.json')
         check_phases(s)
+        kind = options.get('diagnostics') or ('diagnostic' if options.get('profile_seconds') else '')
+        require(s.get('diagnostic', '') == kind, 'scan diagnostic metadata mismatch')
         require(s['mode'] == 'scan' and s['count'] == options['count'], 'changed scan identity')
         require(s['high'] == options['count'] and not s['records'], 'scan mutated records/frontier')
         require(read(root / 'scan/process.json')['returncode'] == 0, 'scan failed')
@@ -278,7 +280,8 @@ def audit(root):
         results['scan'] = s
     n = options['count']
     duration = sum(p['duration_ns'] for p in processes.values()) / 1e9
-    summary = {'count': n, 'duplicates': duplicates, 'lifecycle_seconds': duration,
+    summary = {'diagnostic_only': bool(options.get('diagnostics') or options.get('profile_seconds')), 'count': n,
+               'duplicates': duplicates, 'lifecycle_seconds': duration,
                'lifecycle_records_s': n / duration, 'phases': {}, 'passed': True}
     for mode, result in results.items():
         for p in result['phases']:
@@ -294,6 +297,17 @@ def audit(root):
                              cpu_us_per_record=cpu * 1e6 / work, p99_ms=percentile(p['latency_ns']) / 1e6)
             summary['phases'][mode + '/' + p['name']] = entry
     summary['seed_sync_p99_ms'] = percentile([r['Durable'] - r['Begin'] for r in results['seed']['records']]) / 1e6
+    summary['latency_ms'] = {}
+    for label, mode, start, end in (
+            ('append', 'seed', 'Begin', 'Written'),
+            ('append_sync', 'seed', 'Begin', 'Durable'),
+            ('initial_delivery_ack', 'seed', 'Begin', 'Acked'),
+            ('replay_transfer_sync', 'transfer', 'Begin', 'Durable'),
+            ('replay_delivery_ack', 'deliver', 'Begin', 'Acked')):
+        values = [r[end] - r[start] for r in results[mode]['records'] if r[end] > 0]
+        summary['latency_ms'][label] = {
+            'samples': len(values),
+            **{f'p{int(q*100)}': percentile(values, q) / 1e6 for q in (.5, .95, .99)}}
     return summary
 
 
@@ -336,6 +350,8 @@ def main():
     parser.add_argument('--gzip', action='store_true')
     parser.add_argument('--timeout', type=float, default=180)
     parser.add_argument('--profile-seconds', type=int, default=0)
+    parser.add_argument('--diagnostics', choices=('', 'cpu', 'trace', 'contention'), default='',
+                        help='diagnostic-only profiles for every lifecycle stage; never compare timings')
     args = parser.parse_args()
     if args.audit_only:
         value = audit(args.audit_only)
@@ -350,7 +366,7 @@ def main():
     require(0 <= args.scans <= 10000 and 0 <= args.profile_seconds <= 600 and 0 < args.timeout <= 3600, 'time/scan bounds')
     require(not args.profile_seconds or args.scans, 'profiles require scanning')
     options = {k: v for k, v in vars(args).items() if k not in ('binary', 'out', 'audit_only')}
-    options['token'] = os.urandom(16).hex()  # Synthetic local credential, not a real service secret.
+    options['token'] = os.urandom(16).hex()
     summary = run_trial(args.binary.resolve(), args.out.resolve(), options)
     print(json.dumps(summary, allow_nan=False))
 
