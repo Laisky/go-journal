@@ -226,8 +226,9 @@ func (l *LegacyLoader) LoadMaxId() (maxId int64, err error) {
 	}
 
 	newest := l.newestDataName()
+	var buffers scanReaderBuffers
 	for _, fname := range l.dataFNames {
-		id, dataErr := maxDataID(fname, fname == newest)
+		id, dataErr := maxDataIDWithBuffers(fname, fname == newest, &buffers)
 		if dataErr != nil {
 			return 0, dataErr
 		}
@@ -367,6 +368,10 @@ func (l *LegacyLoader) Clean() error {
 // maxDataID reads a sealed segment without consuming it or changing ACK state.
 // An unreadable record is not permission to allocate potentially colliding IDs.
 func maxDataID(name string, newest bool) (int64, error) {
+	return maxDataIDWithBuffers(name, newest, nil)
+}
+
+func maxDataIDWithBuffers(name string, newest bool, buffers *scanReaderBuffers) (int64, error) {
 	fp, err := os.Open(name)
 	if err != nil {
 		return 0, errors.Wrap(err, "open recovery data")
@@ -379,10 +384,11 @@ func maxDataID(name string, newest bool) (int64, error) {
 	if stat.Size() == 0 {
 		return 0, nil
 	}
-	decoder, err := NewDataDecoder(fp, isFileGZ(name))
+	decoder, err := buffers.decoder(fp, stat, isFileGZ(name))
 	if err != nil {
 		return 0, errors.Wrap(err, "decode recovery data header")
 	}
+	defer buffers.release(decoder)
 	var high int64
 	for {
 		id, readErr := decoder.readRecordID()
