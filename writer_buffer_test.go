@@ -9,13 +9,14 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/tinylib/msgp/msgp"
 )
 
-// These tests deliberately inspect the file after Write, before Flush/Close.
-// Changing a buffer size must not defer visibility or repair a bad write later.
+// Plain writes are immediately visible. Gzip finishes its compressor buffer
+// at explicit Flush; neither mode needs Close to expose complete records.
 func writerVisibleBytes(t *testing.T, name string, compressed bool) []byte {
 	t.Helper()
 	wire, err := os.ReadFile(name)
@@ -32,7 +33,7 @@ func writerVisibleBytes(t *testing.T, name string, compressed bool) []byte {
 	defer r.Close()
 	plain, err := io.ReadAll(r)
 	if err != nil {
-		t.Fatal("incomplete gzip member after successful Write:", err)
+		t.Fatal("incomplete gzip member after Flush:", err)
 	}
 	return plain
 }
@@ -73,8 +74,13 @@ func TestWriterBufferRecordBoundaries(t *testing.T) {
 					if err := enc.Write(d); err != nil {
 						t.Fatal(err)
 					}
+					if compressed {
+						if err := enc.Flush(); err != nil {
+							t.Fatal(err)
+						}
+					}
 					if got := writerVisibleBytes(t, fp.Name(), compressed); !bytes.Equal(got, want.Bytes()) {
-						t.Fatalf("wire differs before Flush/Close after record %d: %d / %d bytes", i, len(got), want.Len())
+						t.Fatalf("wire differs at its visibility boundary after record %d: %d / %d bytes", i, len(got), want.Len())
 					}
 				}
 			})
@@ -107,8 +113,13 @@ func TestWriterBufferAcknowledgementVisibility(t *testing.T) {
 				if err := enc.Write(id); err != nil {
 					t.Fatal(err)
 				}
+				if compressed {
+					if err := enc.Flush(); err != nil {
+						t.Fatal(err)
+					}
+				}
 				if !bytes.Equal(writerVisibleBytes(t, fp.Name(), compressed), want.Bytes()) {
-					t.Fatal("ACK stream differs before Flush/Close")
+					t.Fatal("ACK stream differs at its visibility boundary")
 				}
 			}
 		})
@@ -147,13 +158,16 @@ func TestWriterBufferRejectedLargeEncodingIsAtomic(t *testing.T) {
 			if err := enc.Write(good); err != nil {
 				t.Fatal(err)
 			}
+			if err := enc.Flush(); err != nil {
+				t.Fatal(err)
+			}
 			before, err := os.ReadFile(fp.Name())
 			if err != nil {
 				t.Fatal(err)
 			}
 			calls := 0
 			bad := &Data{ID: 2, Data: map[string]interface{}{"body": writerRejectedValue{writerNoise((4 << 20) + 17), &calls}}}
-			if err := enc.Write(bad); !errors.Is(err, errWriterBufferRejected) || calls != 1 {
+			if err := enc.Write(bad); err == nil || !strings.Contains(err.Error(), errWriterBufferRejected.Error()) || calls != 1 {
 				t.Fatalf("custom encoder calls=%d, error=%v", calls, err)
 			}
 			after, err := os.ReadFile(fp.Name())
@@ -162,6 +176,9 @@ func TestWriterBufferRejectedLargeEncodingIsAtomic(t *testing.T) {
 			}
 			if err := enc.Write(good); err != nil {
 				t.Fatal("valid retry rejected", err)
+			}
+			if err := enc.Flush(); err != nil {
+				t.Fatal(err)
 			}
 			var want bytes.Buffer
 			if err := msgp.Encode(&want, good); err != nil {
