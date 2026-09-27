@@ -2,7 +2,6 @@
 """Actual executable mutants must fail the independent lifecycle assertion."""
 import argparse
 import json
-import os
 from pathlib import Path
 import subprocess
 import sys
@@ -18,14 +17,11 @@ def main():
     here = Path(__file__).resolve().parent
     source = (here / 'main.go').read_text()
     variants = {
-        # Successful API return and a synthetic timestamp must not hide lost data.
         'omit-append': ('err := j.WriteData(&journal.Data{ID: id, Data: map[string]interface{}{"id": id, "body": body}})',
                         'var err error; if id != 50 { err = j.WriteData(&journal.Data{ID: id, Data: map[string]interface{}{"id": id, "body": body}}) }',
                         'transfer missing/extra records'),
-        # An ACK cannot be replaced by a no-op despite successful downstream HTTP.
         'omit-ack': ('err = j.WriteId(id)', 'err = nil // mutant: omit ACK', 'transfer missing/extra records'),
-        # EOF cleanup must not erase still-pending work without a replacement.
-        'omit-transfer': ('if err = j.WriteData(d); err != nil {', 'if err = error(nil); err != nil {',
+        'omit-transfer': ('err = j.WriteData(d)', 'err = nil // mutant: omit transfer',
                           'frontier 49, want 64'),
     }
     outcomes = []
@@ -35,8 +31,14 @@ def main():
         with tempfile.TemporaryDirectory(prefix='journal-worker-') as temp:
             path = Path(temp) / 'main.go'
             path.write_text(source.replace(old, new, 1))
+            support = []
+            for extra in here.glob('*.go'):
+                if extra.name != 'main.go' and not extra.name.endswith('_test.go'):
+                    copy = Path(temp) / extra.name
+                    copy.write_bytes(extra.read_bytes())
+                    support.append(str(copy))
             binary = Path(temp) / 'worker'
-            subprocess.run(['go', 'build', '-mod=readonly', '-o', str(binary), str(path)], check=True)
+            subprocess.run(['go', 'build', '-mod=readonly', '-o', str(binary), str(path), *support], check=True)
             target = root / name
             cmd = [sys.executable, str(here / 'run.py'), '--binary', str(binary), '--out', str(target),
                    '--count', '64', '--payload', '64', '--writers', '4', '--scans', '1']
