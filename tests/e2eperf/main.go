@@ -48,11 +48,11 @@ type usage struct {
 	RSSKiB  int64   `json:"peak_rss_kib"`
 }
 type phase struct {
-	Name       string `json:"name"`
-	Begin, End int64
+	Name          string `json:"name"`
+	Begin, End    int64
 	Before, After usage
-	Ops        int64   `json:"ops"`
-	LatencyNS  []int64 `json:"latency_ns"`
+	Ops           int64   `json:"ops"`
+	LatencyNS     []int64 `json:"latency_ns"`
 }
 type result struct {
 	Diagnostic  string `json:"diagnostic,omitempty"`
@@ -313,6 +313,16 @@ func replay(j *journal.Journal, o options, r *result, client *http.Client) error
 	}
 }
 
+// Rotation workloads must not reserve the historical 512 MiB per segment.
+// Automatic rotation checks stay at 24 hours; this is only a preallocation hint.
+// The same formula is used for both revisions, never counted as a code speedup.
+func workloadSegmentBytes(o options) int64 {
+	if o.RotateEvery == 0 {
+		return 1 << 30
+	}
+	return 2 * int64(o.RotateEvery) * (int64(o.Payload) + 256)
+}
+
 func run(o options) (err error) {
 	if err = journal.Logger.ChangeLevel("error"); err != nil {
 		return err
@@ -332,7 +342,7 @@ func run(o options) (err error) {
 		j, e = journal.NewJournal(journal.WithBufDirPath(o.Dir), journal.WithName("e2eperf"),
 			journal.WithIsCompress(o.Gzip), journal.WithIsAggresiveGC(false),
 			journal.WithFlushInterval(24*time.Hour), journal.WithRotateDuration(24*time.Hour),
-			journal.WithRotateCheckInterval(24*time.Hour), journal.WithCommitIDTTL(24*time.Hour), journal.WithBufSizeByte(1<<30))
+			journal.WithRotateCheckInterval(24*time.Hour), journal.WithCommitIDTTL(24*time.Hour), journal.WithBufSizeByte(workloadSegmentBytes(o)))
 		if e == nil {
 			e = j.Start(context.Background())
 		}
