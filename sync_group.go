@@ -12,8 +12,9 @@ var errSyncBarrierAborted = errors.New("journal sync barrier did not complete")
 // otherwise a later writer could join a barrier that did not cover its data.
 // There is no batching timer, worker goroutine, dirty-bit cache or weaker fsync.
 type syncBarrierGroup struct {
-	mu     sync.Mutex
-	active *syncBarrierFlight
+	mu      sync.Mutex
+	active  *syncBarrierFlight
+	running bool
 }
 
 type syncBarrierFlight struct {
@@ -24,20 +25,27 @@ type syncBarrierFlight struct {
 func (g *syncBarrierGroup) join() (*syncBarrierFlight, bool) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if g.active != nil {
-		return g.active, false
+	if !g.running {
+		g.running = true
+		return nil, true
 	}
-	f := &syncBarrierFlight{done: make(chan struct{})}
-	g.active = f
-	return f, true
+	// Allocate a notification/result only when there is an actual follower.
+	// An uncontended Sync keeps the original zero-allocation coordination path.
+	if g.active == nil {
+		g.active = &syncBarrierFlight{done: make(chan struct{})}
+	}
+	return g.active, false
 }
 
-func (g *syncBarrierGroup) complete(f *syncBarrierFlight, err error) {
+func (g *syncBarrierGroup) complete(err error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	f.err = err
+	if f := g.active; f != nil {
+		f.err = err
+		close(f.done)
+	}
 	g.active = nil
-	close(f.done)
+	g.running = false
 }
 
 func (g *syncBarrierGroup) run(lock sync.Locker, barrier func() error) error {
@@ -53,7 +61,7 @@ func (g *syncBarrierGroup) run(lock sync.Locker, barrier func() error) error {
 	defer func() {
 		// Also release waiters on a panic/Goexit without claiming durability.
 		// The owner's panic is not swallowed; followers receive a failure.
-		g.complete(f, err)
+		g.complete(err)
 		lock.Unlock()
 	}()
 	err = barrier()
