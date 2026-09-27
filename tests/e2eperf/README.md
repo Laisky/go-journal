@@ -1,6 +1,8 @@
 # Observable public-API journal E2E performance
 
-This executable is an ordinary consumer of exported Journal APIs, not an internal microbenchmark. It uses real private data/ACK files, an independent loopback downstream, and repeated process restart. PR #9 has merged; PR #10 targets `master`. The immutable pre-optimization measurement baseline is `fc156a60fafc21dd36ad534e5b8f7a971beccec8`. Do not merge or deploy automatically.
+An ordinary consumer of exported Journal APIs, not an internal microbenchmark. It uses real private data/ACK files, an independent loopback downstream, and repeated process restart. PR #9 has merged; PR #10 targets `master`. The immutable pre-optimization measurement baseline is `fc156a60fafc21dd36ad534e5b8f7a971beccec8`.
+
+See [measured results, accepted/rejected changes, and evidence hashes](RESULTS.md). Do not merge or deploy automatically.
 
 ## What one trial proves
 
@@ -10,9 +12,9 @@ Concurrent writers append generated IDs/payloads and call `Sync`. For the select
 
 The controller kills seed and transfer workers only after their synchronized checkpoint. A new process recovers every pending record, copies and synchronizes it **before** requesting the next record or EOF cleanup, and is killed again. Final delivery reconciles the independently generated expected IDs and hashes with the peer ledger. The last open must retain the maximum ID and contain no pending record.
 
-Queue admission, `Flush`, `Close`, and an arbitrary HTTP success are not durable completion. Identical downstream retries are counted, not silently deduplicated or called exactly-once. `negative.py` builds three real executable mutants (omitted append, ACK, and transfer); each must fail its intended independent assertion, not merely fail compilation.
+Queue admission, `Flush`, `Close`, and arbitrary HTTP success are not durable completion. Identical downstream retries are counted, not silently deduplicated or called exactly-once. `negative.py` builds three real executable mutants (omitted append, ACK, and transfer); each must fail its intended independent assertion, not merely fail compilation.
 
-This is a synchronized-checkpoint process-crash test. It is **not** random-point crash or physical power-loss certification. Keep the repository's existing crash, corruption, gzip-checksum and sequence-state tests.
+This is a synchronized-checkpoint process-crash test, **not** random-point crash or physical power-loss certification. Keep the existing crash, corruption, gzip-checksum and sequence-state tests.
 
 ## Build and run
 
@@ -33,15 +35,14 @@ python3 -m unittest discover -s tests/e2eperf -p 'test_*.py' -v
 python3 tests/e2eperf/negative.py --out "$E/negative"
 ```
 
-`--count` is the number of source records, not the number of repeated scan operations. `--payload` excludes the identity/Unicode prefix. A scan trial performs `writers × scans` full maximum-ID scans; do not report that as newly delivered messages.
+`--count` is the number of source records, not repeated scan operations. `--payload` excludes the identity/Unicode prefix. A scan trial performs `writers × scans` full maximum-ID scans; do not report these as newly delivered messages.
 
 ## Build a fair baseline
 
-Use the **same current worker source**, compiler, dependency graph, flags and workload against both library revisions. Building each revision's different historical harness is not a valid comparison.
+Use the **same current worker source**, compiler, dependency graph, flags and workload against both library revisions. Building different historical harnesses is not a valid comparison.
 
 ```sh
 BASE=fc156a60fafc21dd36ad534e5b8f7a971beccec8
-ROOT=$(pwd)
 git worktree add --detach "$E/baseline-src" "$BASE"
 cmp go.mod "$E/baseline-src/go.mod"
 cmp go.sum "$E/baseline-src/go.sum"
@@ -63,7 +64,7 @@ The comparison alternates AB/BA ordering, retains every observation and failure,
 
 ## Load matrix
 
-`stress.py` freezes a bounded cross-product of record size, concurrent writers, ACK ratio and codec. The default matrix has six cases. Preview large campaigns before executing them; no more than 36 cases or 10 pairs per campaign are allowed, and each trial has a 2 GiB synthetic data-work bound. This is not a total artifact-size guarantee.
+`stress.py` freezes a bounded cross-product of record size, concurrent writers, ACK ratio and codec. Its default matrix has six cases. Preview large campaigns before execution: no more than 36 cases or 10 pairs per campaign, with a 2 GiB synthetic data-work bound per trial. This is not a total artifact-size or memory guarantee.
 
 ```sh
 python3 tests/e2eperf/stress.py \
@@ -72,7 +73,7 @@ python3 tests/e2eperf/stress.py \
   --writers 1,4,16 --ack-percents 0,50,100 \
   --codecs plain,gzip --scans 4 --pairs 5 --generate-only
 
-# Execute a smaller 12-case concurrency/ACK matrix, including zero pending work.
+# Execute 12 cases, including all-pending and zero-pending recovery.
 python3 tests/e2eperf/stress.py \
   --baseline "$E/worker-baseline" --candidate "$E/worker" \
   --out "$E/concurrency" --count 512 --payloads 1024 \
@@ -80,11 +81,11 @@ python3 tests/e2eperf/stress.py \
   --codecs plain,gzip --scans 0 --pairs 5
 ```
 
-These are **fixed-work, closed-loop** loads: each writer waits for successful synchronization and its selected delivery/ACK before admitting another record. They are useful for contention and resource comparisons, not an open-loop offered-rate SLO or sustained-capacity certificate. The payload is deliberately deterministic and highly compressible; gzip results do not represent high-entropy production traffic. Use representative storage, payload distributions and long-running offered-rate workloads before sizing production.
+These are **fixed-work, closed-loop** loads: each writer waits for synchronization and its selected delivery/ACK before admitting another record. They identify contention and resource changes, not an open-loop offered-rate SLO or sustained-capacity certificate. The payload is deterministic and highly compressible; gzip results do not represent high-entropy production traffic. Use representative storage, payload distributions and long-running offered-rate workloads before sizing production.
 
 ## Capture profiles separately from timings
 
-`--diagnostics cpu`, `trace`, or `contention` profiles **every lifecycle stage**, including open, frontier discovery, append/Sync, replay and seal. CPU and execution tracing use separate runs. Contention sampling is intentionally expensive. All diagnostic runs are marked `diagnostic_only`; `compare.py` and `report.py` reject them for performance acceptance.
+`--diagnostics cpu`, `trace`, or `contention` profiles each worker stage across open, frontier discovery, append/Sync, replay and seal. CPU and execution tracing use separate runs. Contention sampling is intentionally expensive. Diagnostic runs are marked `diagnostic_only`; both comparison and reporting reject them for performance acceptance.
 
 ```sh
 for kind in cpu trace contention; do
@@ -94,13 +95,13 @@ for kind in cpu trace contention; do
 done
 ```
 
-Every phase writes before/after allocation profiles, a post-GC live-heap profile, and profiler configuration metadata. CPU mode adds `cpu.pprof`; trace mode adds `trace.out`; contention mode adds `block.pprof` and `mutex.pprof`. Profiles are finalized **before** publishing the checkpoint, so the intentional SIGKILL does not truncate them. Existing evidence files are never overwritten.
+Each profiled worker process writes before/after allocation profiles, a post-GC live-heap profile, and configuration metadata. CPU mode adds `cpu.pprof`; trace mode adds `trace.out`; contention mode adds `block.pprof` and `mutex.pprof`. Profiles are finalized **before** publishing the checkpoint, so intentional SIGKILL does not truncate them. Existing evidence files are never overwritten.
 
-Trace regions identify `WriteData`, `Sync/data`, `downstream/fsync-receipt`, `WriteId`, `Sync/ack`, `LoadLegacyBuf`, and replay equivalents. Phase labels distinguish top-level operations. Background goroutines may retain the label of their creation phase; do not interpret a phase label as exclusive ownership of asynchronous work.
+Trace regions identify `WriteData`, `Sync/data`, `downstream/fsync-receipt`, `WriteId`, `Sync/ack`, `LoadLegacyBuf`, and replay equivalents. Phase labels distinguish top-level operations within a worker profile. Background goroutines may retain their creation-phase label; that label is not exclusive ownership of asynchronous work.
 
-### Interactive CPU flame graph and heap views
+### Interactive CPU flame graphs and heap views
 
-These commands start local-only interactive pprof views. Use the Flame Graph and Graph menus. Keep the exact measured executable with its profiles for symbolization.
+These commands start local-only interactive pprof views. Select Flame Graph or Graph in the browser. Keep the exact measured executable for symbolization.
 
 ```sh
 go tool pprof -http=127.0.0.1:8081 -no_browser \
@@ -114,7 +115,7 @@ go tool pprof -http=127.0.0.1:8083 -no_browser -sample_index=inuse_space \
   "$E/worker" "$E/diagnostic-cpu/seed/heap.pprof"
 ```
 
-Allocation churn and retained heap are different metrics. Subtract the before profile when analyzing allocations; the live heap is captured before closing the journal and excludes the later result-file serialization. For short phases, increase fixed work or use a separate `--profile-seconds 5` scan diagnostic; never mix its variable operation count into the fixed-work comparison.
+Allocation churn and retained heap are different metrics. Subtract the before profile when analyzing allocations. The live heap is captured before closing the journal and excludes later result-file serialization. For short phases, increase work or use a separate `--profile-seconds 5` scan diagnostic; never mix its variable operation count into fixed-work comparisons.
 
 ### Scheduler, syscall and lock bottlenecks
 
@@ -126,26 +127,14 @@ go tool pprof -top "$E/worker" "$E/sync.pprof"
 go tool pprof -top "$E/worker" "$E/diagnostic-contention/seed/mutex.pprof"
 ```
 
-Summed blocked-goroutine time can exceed elapsed time; it is not a percentage of wall-clock latency. The independent Python peer also performs real fsyncs. Its cost can dominate delivery throughput; worker CPU profiles do not measure the peer's CPU.
+Summed blocked-goroutine time can exceed elapsed time; it is not a percentage of wall-clock latency. The independent Python peer performs real fsyncs and can dominate delivery throughput; worker profiles do not measure the peer's CPU.
 
-## Evidence and decisions
+## Evidence and acceptance
 
-`result.json` contains monotonic phase intervals, exact operation counts, per-record timestamps and process resource observations. `summary.json` reports p50/p95/p99 operation latency, CPU, allocations, RSS and lifecycle throughput. `environment.json` records affinity/quota, GOMAXPROCS, filesystem mounts, CPU information and executable SHA256. RSS uses process VmHWM: it is cumulative high-water memory, not independently reset per phase.
+`result.json` retains monotonic intervals, exact operation counts, per-record timestamps and process observations. `summary.json` reports p50/p95/p99 operation latency, CPU, allocations, RSS and lifecycle throughput. `environment.json` records affinity/quota, GOMAXPROCS, filesystem mounts, CPU information and executable SHA256. RSS is process VmHWM: a cumulative high-water mark, not independently reset per phase.
 
-The paired report retains individual baseline/candidate samples and candidate/baseline ratios. Its deterministic 95% paired-bootstrap intervals are **exploratory**, not multiplicity-corrected proofs. Fewer than five pairs, zero denominators, incomplete work, failed trials and diagnostic contamination cannot be called a measured improvement. The `improved`/`regressed` labels use a 5% relative threshold; inspect absolute effects and whole-lifecycle guardrails too. An inconclusive result is not proof of equivalence.
+Paired reports retain individual samples and candidate/baseline ratios. Deterministic 95% paired-bootstrap intervals are **exploratory**, not multiplicity-corrected proofs. Fewer than five pairs, zero denominators, incomplete work, failures and diagnostic contamination cannot be called measured improvements. The `improved`/`regressed` labels use a 5% relative threshold; inspect absolute effects and whole-lifecycle guardrails. Inconclusive does not mean equivalent.
 
-Accept production changes only after behavior/race/fuzz/negative controls and matched measurements. Preserve all regressions in the report; explain or investigate small noisy effects rather than deleting them. Do not change synchronization cadence, ACK order, generated-decoder error policy, replay sequence state, dependencies or wire format to obtain a benchmark win.
+Accept changes only after behavior/race/fuzz/negative controls and matched measurements. Keep regressions visible; investigate small noisy effects instead of deleting them. Do not change synchronization cadence, ACK order, generated-decoder error policy, replay sequence state, dependencies or wire format to obtain a benchmark win.
 
-### First measured iteration (2026-09-27)
-
-Run [36340761366](https://github.com/Laisky/go-journal/actions/runs/36340761366), source `4a41e4b26450fc153e2bf8a8a55970ac58df0524`, retained 40 baseline/candidate lifecycles and 30 isolated large-buffer experiment lifecycles. Full suite: 361 test/subtest passes; race: 1,083; ID-scan fuzz: 123,144 executions; experiment fuzz: 114,963. No behavior failure or skip occurred.
-
-The original ID-only scan reduced 16 KiB scan median time from 614.4 ms to 172.8 ms and allocation churn from 5.212 GB to 0.292 GB. However, oversized-record scan CPU regressed: the 128 KiB inspection cap forced large buffered payloads through full string decoding. The separate allocation profile attributed 80.08% of allocation bytes to `ReadString`.
-
-Removing only the stateless ID-scan cap (not replay's successor guard) reduced the isolated 256 KiB case's scan median from 234.8 ms to 85.6 ms and allocation churn from 2.493 GB to 0.412 GB. Paired ratios were 0.3483 and 0.1654 respectively. Whole-lifecycle throughput did not show a material improvement. A 0.294 ms median increase in the empty final verification phase was also retained and flagged for follow-up; no end-to-end speedup is claimed from the scan result.
-
-The post-change allocation profile moved its largest share to reader-buffer allocation, motivating the next isolated buffer-size experiment rather than speculative production changes. The workflow retains exact experiment patches and results; experimental worktrees are never merged automatically.
-
-Artifact 10938693548 ZIP SHA256: `d8d15827766cd02380bc52aa43e38e835eb6a4a3d565c56dd830f0d6123cf866`. Its 2,705 included manifest entries verified; upload-artifact omitted ten hidden `.journal.lock` files. This packaging gap is explicit, and subsequent uploads include hidden synthetic evidence files so the complete manifest can be verified.
-
-CI publishes source, both executables, module graph, every observation, profiles, tests and SHA256SUMS. Download artifacts before their 14-day retention expires. A passing CI job means the campaign completed correctly, not that every performance metric improved or that production capacity has been certified.
+CI publishes source, executables, module graph, every observation, profiles, tests and SHA256SUMS. Download artifacts before their 14-day retention expires. The workflow includes hidden synthetic evidence files so the complete manifest can be checked. A passing job means the campaign completed correctly, not that every metric improved or production capacity was certified. [RESULTS.md](RESULTS.md) records the measured scope, decisions and remaining limitations.
