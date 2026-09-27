@@ -18,11 +18,11 @@ import (
 // acceptance comparison: GC, stack sampling and trace collection perturb work.
 // CPU and tracing are separate modes so their overhead is not conflated.
 type diagnostics struct {
-	dir, kind           string
-	cpu, execution      *os.File
+	dir, kind            string
+	cpu, execution       *os.File
 	blockRate, mutexRate int
-	oldMutex            int
-	closed              bool
+	oldMutex             int
+	closed               bool
 }
 
 func exclusiveProfile(dir, name string) (*os.File, error) {
