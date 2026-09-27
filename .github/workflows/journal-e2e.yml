@@ -24,7 +24,7 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           go-version: '1.27.1'
-      - name: Freeze identical worker and isolated scan-buffer integration
+      - name: Build exact adopted head and frozen baseline with identical workers
         shell: bash
         run: |
           set -euo pipefail
@@ -33,11 +33,18 @@ jobs:
           git rev-parse HEAD HEAD^{tree} > "$E/source.txt"
           git archive --format=tar.gz HEAD > "$E/source.tar.gz"
           git archive --format=tar.gz "$BASELINE" > "$E/baseline-source.tar.gz"
-          printf 'baseline=%s\ncandidate=HEAD plus candidate.patch\n' "$BASELINE" > "$E/campaign.txt"
+          printf 'baseline=%s\ncandidate=exact checked-in HEAD\n' "$BASELINE" > "$E/campaign.txt"
           go version > "$E/toolchain.txt"
+          go env -json GOARCH GOOS GOEXPERIMENT CGO_ENABLED GOAMD64 > "$E/compiler-env.json"
+          python3 - <<'PY' > "$E/runtime-env.json"
+          import json, os
+          print(json.dumps({key: os.environ.get(key) for key in ('GOGC','GOMEMLIMIT','GODEBUG','GOMAXPROCS')}, indent=2))
+          PY
           cp go.mod go.sum "$E/"
           go mod download
           go mod verify > "$E/module-verify.txt"
+          git show "$BASELINE:serialize.go" | cmp - serialize.go
+          test -z "$(gofmt -l scan_buffers.go scan_buffers_test.go writer_buffer_test.go tests/e2eperf/main.go tests/e2eperf/segments_test.go)"
           python3 -m unittest discover -s tests/e2eperf -p 'test_*.py' -v > "$E/python-tests.txt" 2>&1
           for side in baseline candidate; do
             T="$RUNNER_TEMP/scan-$side"
@@ -48,10 +55,10 @@ jobs:
             cmp go.sum "$T/go.sum"
             cp tests/e2eperf/*.go "$T/tests/e2eperf/"
             cp scan_buffers.go scan_buffers_test.go writer_buffer_test.go "$T/"
-            if [ "$side" = candidate ]; then python3 tests/e2eperf/scan_experiment.py --source "$T"; fi
             (cd "$T" && git diff -- legacy.go serialize.go > "$E/$side.patch" && go build -mod=readonly -trimpath -o "$E/worker-$side" ./tests/e2eperf)
             go version -m "$E/worker-$side" > "$E/build-$side.txt"
           done
+          test ! -s "$E/candidate.patch"
           sha256sum "$E"/worker-* tests/e2eperf/*.* scan_buffers*.go writer_buffer_test.go > "$E/build-hashes.txt"
       - name: Native behavior race error reset immediate crash and negative controls
         shell: bash
