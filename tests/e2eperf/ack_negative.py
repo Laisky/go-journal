@@ -3,11 +3,14 @@
 import argparse
 import json
 from pathlib import Path
-import subprocess
 import tempfile
+
+from compare import run_supervisor
+from supervised_exec import install_signal_handlers
 
 
 def main():
+    install_signal_handlers()
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--out', type=Path, required=True)
     a = p.parse_args()
@@ -28,9 +31,8 @@ def main():
                     files.append(str(target))
             log = a.out/(name+'.jsonl')
             with log.open('x') as output:
-                result = subprocess.run(['go', 'test', '-mod=readonly', '-count=1', '-json', '-run',
-                                         '^TestACKScanReuseResetsBaseUnreadBytesAndErrors$', *files],
-                                        stdout=output, stderr=subprocess.STDOUT, timeout=120)
+                code = run_supervisor(['go', 'test', '-mod=readonly', '-count=1', '-json', '-run',
+                                       '^TestACKScanReuseResetsBaseUnreadBytesAndErrors$', *files], output, 120)
             events = []
             for line in log.read_text().splitlines():
                 try:
@@ -38,13 +40,13 @@ def main():
                 except json.JSONDecodeError:
                     pass
             action = 'pass' if name == 'positive' else 'fail'
-            if result.returncode != (0 if name == 'positive' else 1) or not any(
+            if code != (0 if name == 'positive' else 1) or not any(
                     e.get('Test') == 'TestACKScanReuseResetsBaseUnreadBytesAndErrors' and e.get('Action') == action
                     for e in events):
                 raise ValueError(f'{name}: compilation/timeout/unexpected outcome is not an assertion')
             if name != 'positive' and 'ACK reader retained file state' not in log.read_text():
                 raise ValueError('mutant did not fail the intended base-reset assertion')
-            outcomes.append({'variant': name, 'returncode': result.returncode, 'assertion': action})
+            outcomes.append({'variant': name, 'returncode': code, 'assertion': action})
     print(json.dumps(outcomes))
 
 
