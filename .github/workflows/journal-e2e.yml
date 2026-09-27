@@ -14,7 +14,8 @@ jobs:
     env:
       GOTOOLCHAIN: local
       GOMAXPROCS: '4'
-      BASELINE: fc156a60fafc21dd36ad534e5b8f7a971beccec8
+      BASELINE: a295f519c37dce75ddedac3803f26a46c9ad7279
+      SYNC_EXPERIMENT: '1'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -24,115 +25,93 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           go-version: '1.27.1'
-      - name: Build identical harness against pinned baseline and candidate
+      - name: Build one frozen worker against baseline and explicit candidate
         shell: bash
         run: |
           set -euo pipefail
           E="$RUNNER_TEMP/journal-evidence"
+          C="$RUNNER_TEMP/journal-candidate"
+          B="$RUNNER_TEMP/journal-baseline"
           mkdir -p "$E"
           git rev-parse HEAD HEAD^{tree} > "$E/source.txt"
+          printf 'baseline=%s\nexperimental_patch=%s\n' "$BASELINE" "$SYNC_EXPERIMENT" > "$E/campaign.txt"
           git archive --format=tar.gz HEAD > "$E/source.tar.gz"
           go version > "$E/toolchain.txt"
           cp go.mod go.sum "$E/"
           go mod download
           go mod verify > "$E/module-verify.txt"
-          go build -mod=readonly -trimpath -o "$E/worker-candidate" ./tests/e2eperf
-          git worktree add --detach "$RUNNER_TEMP/journal-baseline" "$BASELINE"
-          cmp go.mod "$RUNNER_TEMP/journal-baseline/go.mod"
-          cmp go.sum "$RUNNER_TEMP/journal-baseline/go.sum"
-          mkdir -p "$RUNNER_TEMP/journal-baseline/tests/e2eperf"
-          cp tests/e2eperf/*.go "$RUNNER_TEMP/journal-baseline/tests/e2eperf/"
-          (cd "$RUNNER_TEMP/journal-baseline" && go build -mod=readonly -trimpath -o "$E/worker-baseline" ./tests/e2eperf)
+          git worktree add --detach "$C" HEAD
+          if [ "$SYNC_EXPERIMENT" = 1 ]; then
+            python3 tests/e2eperf/sync_experiment.py --source "$C" --apply
+          fi
+          (cd "$C" && git diff > "$E/candidate.patch" && go build -mod=readonly -trimpath -o "$E/worker-candidate" ./tests/e2eperf)
+          cp "$C/journal.go" "$E/candidate-journal.go"
+          git worktree add --detach "$B" "$BASELINE"
+          cmp go.mod "$B/go.mod"
+          cmp go.sum "$B/go.sum"
+          cp tests/e2eperf/*.go "$B/tests/e2eperf/"
+          (cd "$B" && go build -mod=readonly -trimpath -o "$E/worker-baseline" ./tests/e2eperf)
           go version -m "$E/worker-candidate" > "$E/build-candidate.txt"
           go version -m "$E/worker-baseline" > "$E/build-baseline.txt"
           sha256sum "$E"/worker-* tests/e2eperf/*.* > "$E/build-hashes.txt"
           python3 -m unittest discover -s tests/e2eperf -p 'test_*.py' -v 2>&1 | tee "$E/python-tests.txt"
-      - name: Five counterbalanced pairs with independent re-audit
+      - name: Candidate correctness race crash and executable negative controls
         shell: bash
         run: |
           set -euo pipefail
           E="$RUNNER_TEMP/journal-evidence"
-          python3 tests/e2eperf/compare.py --baseline "$E/worker-baseline" --candidate "$E/worker-candidate" --cases tests/e2eperf/cases.json --pairs 5 --out "$E/paired" > "$E/paired-medians.json"
-          python3 - <<'PY'
-          import json, os, pathlib
-          r=json.loads((pathlib.Path(os.environ['RUNNER_TEMP'])/'journal-evidence/paired/report.json').read_text())
-          for case, metrics in r['assessment'].items():
-              for key in ('lifecycle_seconds','seed_sync_p99_ms','scan/scan/seconds','scan/scan/allocated_bytes'):
-                  m=metrics[key]
-                  print(case,key,m['baseline_median'],m['candidate_median'],m['median_ratio'],m['status'])
-          PY
-      - name: Twelve-case concurrency ACK and codec stress matrix
-        shell: bash
-        run: |
-          set -euo pipefail
-          E="$RUNNER_TEMP/journal-evidence"
-          python3 tests/e2eperf/stress.py --baseline "$E/worker-baseline" --candidate "$E/worker-candidate" --out "$E/stress" --count 512 --payloads 1024 --writers 1,8,32 --ack-percents 0,100 --codecs plain,gzip --scans 0 --pairs 5 > "$E/stress-medians.txt"
-      - name: Full behavior race fuzz and executable negative controls
-        shell: bash
-        run: |
-          set -euo pipefail
-          E="$RUNNER_TEMP/journal-evidence"
+          cd "$RUNNER_TEMP/journal-candidate"
           go vet -mod=readonly ./... > "$E/vet.txt" 2>&1
           go test -mod=readonly -count=1 -json ./... > "$E/full.jsonl"
           go test -mod=readonly -race -shuffle=on -count=3 -json ./... > "$E/race.jsonl"
           go test -mod=readonly -run '^$' -fuzz '^FuzzIDScanMatchesGenerated$' -fuzztime=8s > "$E/maxid-fuzz.txt"
           python3 tests/e2eperf/negative.py --out "$E/negative" > "$E/negative-summary.json"
-          python3 tests/e2eperf/run.py --binary "$E/worker-candidate" --out "$E/no-scan" --count 64 --payload 256 --writers 8 --scans 0 > "$E/no-scan-summary.json"
+          python3 tests/e2eperf/sync_experiment.py --source . --negative "$E/sync-negative" > "$E/sync-negative-summary.json"
           git diff --exit-code -- go.mod go.sum
-      - name: Separate CPU heap contention and execution-trace diagnostics
+      - name: Five paired durable-load trials with single-writer controls
         shell: bash
         run: |
           set -euo pipefail
           E="$RUNNER_TEMP/journal-evidence"
-          for kind in cpu trace contention; do
-            python3 tests/e2eperf/run.py --binary "$E/worker-candidate" --out "$E/diagnostic-$kind" --count 512 --payload 16384 --writers 8 --scans 2 --diagnostics "$kind" > "$E/diagnostic-$kind.log"
-          done
-          for side in baseline candidate; do
-            python3 tests/e2eperf/run.py --binary "$E/worker-$side" --out "$E/oversize-$side" --count 64 --payload 262144 --writers 4 --scans 1 --profile-seconds 3 --diagnostics cpu > "$E/oversize-$side.log"
-            go tool pprof -top -nodecount=20 -tagfocus=phase=scan "$E/worker-$side" "$E/oversize-$side/scan/cpu.pprof" > "$E/oversize-$side-cpu.txt"
-            go tool pprof -top -nodecount=20 -sample_index=alloc_space -base="$E/oversize-$side/scan/alloc-before.pprof" "$E/worker-$side" "$E/oversize-$side/scan/alloc.pprof" > "$E/oversize-$side-alloc.txt"
-          done
-          for mode in seed transfer deliver; do
-            go tool trace -pprof=sync "$E/diagnostic-trace/$mode/trace.out" > "$E/diagnostic-trace/$mode/sync.pprof"
-            go tool trace -pprof=syscall "$E/diagnostic-trace/$mode/trace.out" > "$E/diagnostic-trace/$mode/syscall.pprof"
-            go tool pprof -top -nodecount=15 "$E/worker-candidate" "$E/diagnostic-trace/$mode/sync.pprof" > "$E/$mode-trace-sync.txt"
-            go tool pprof -top -nodecount=15 "$E/worker-candidate" "$E/diagnostic-contention/$mode/mutex.pprof" > "$E/$mode-mutex.txt"
-          done
-          cat "$E/oversize-candidate-alloc.txt" "$E/seed-trace-sync.txt"
-      - name: Isolated hypothesis - reduce large-file read buffer to 1 MiB
-        shell: bash
-        run: |
-          set -euo pipefail
-          E="$RUNNER_TEMP/journal-evidence"
-          git worktree add --detach "$RUNNER_TEMP/journal-experiment" HEAD
-          python3 - <<'PY'
-          import os, pathlib
-          p=pathlib.Path(os.environ['RUNNER_TEMP'])/'journal-experiment/serialize.go'
-          text=p.read_text()
-          old='\t\t\tsize = BufSize\n'
-          assert text.count(old)==1, 'hypothesis no longer applies; update the campaign explicitly'
-          p.write_text(text.replace(old,'\t\t\tsize = 1 << 20\n',1))
-          PY
-          (cd "$RUNNER_TEMP/journal-experiment" && git diff > "$E/experiment.patch" && go test -mod=readonly -count=1 -json ./... > "$E/experiment-tests.jsonl" && go test -mod=readonly -run '^$' -fuzz '^FuzzIDScanMatchesGenerated$' -fuzztime=8s > "$E/experiment-fuzz.txt" && go build -mod=readonly -trimpath -o "$E/worker-experiment" ./tests/e2eperf)
-          printf '%s\n' '[{"name":"plain-oversize","count":128,"payload":262144,"writers":4,"ack_percent":50,"scans":16},{"name":"plain-control","count":512,"payload":16384,"writers":4,"ack_percent":50,"scans":16},{"name":"gzip-control","count":256,"payload":4096,"writers":4,"ack_percent":75,"scans":8,"gzip":true}]' > "$E/experiment-cases.json"
-          python3 tests/e2eperf/compare.py --baseline "$E/worker-candidate" --candidate "$E/worker-experiment" --cases "$E/experiment-cases.json" --pairs 5 --out "$E/experiment" > "$E/experiment-medians.json"
-          python3 tests/e2eperf/run.py --binary "$E/worker-experiment" --out "$E/oversize-experiment" --count 64 --payload 262144 --writers 4 --scans 1 --profile-seconds 3 --diagnostics cpu > "$E/oversize-experiment.log"
-          go tool pprof -top -nodecount=20 -sample_index=alloc_space -base="$E/oversize-experiment/scan/alloc-before.pprof" "$E/worker-experiment" "$E/oversize-experiment/scan/alloc.pprof" > "$E/oversize-experiment-alloc.txt"
+          python3 tests/e2eperf/compare.py --baseline "$E/worker-baseline" --candidate "$E/worker-candidate" --cases tests/e2eperf/sync_cases.json --pairs 5 --out "$E/sync-paired" > "$E/sync-medians.json"
           python3 - <<'PY'
           import json, os, pathlib
-          r=json.loads((pathlib.Path(os.environ['RUNNER_TEMP'])/'journal-evidence/experiment/report.json').read_text())
-          for case,metrics in r['assessment'].items():
-              for key in ('lifecycle_seconds','seed_sync_p99_ms','scan/scan/seconds','scan/scan/allocated_bytes'):
+          r=json.loads((pathlib.Path(os.environ['RUNNER_TEMP'])/'journal-evidence/sync-paired/report.json').read_text())
+          for case, metrics in r['assessment'].items():
+              for key in ('lifecycle_seconds','seed_sync_p99_ms','seed/append_sync_deliver_ack/seconds','seed/append_sync_deliver_ack/cpu_seconds','seed/append_sync_deliver_ack/allocated_bytes'):
                   m=metrics[key]
-                  print(case,key,m['baseline_median'],m['candidate_median'],m['median_ratio'],m['status'])
+                  print(case,key,m['baseline_median'],m['candidate_median'],m['median_ratio'],m['interval95'],m['status'])
           PY
-          cat "$E/oversize-experiment-alloc.txt"
-      - name: Identical-binary control for small-phase noise
+      - name: Existing scan and recovery regression workloads
         shell: bash
         run: |
           set -euo pipefail
           E="$RUNNER_TEMP/journal-evidence"
-          printf '%s\n' '[{"name":"same-binary","count":512,"payload":16384,"writers":4,"ack_percent":50,"scans":4}]' > "$E/aa-cases.json"
+          python3 tests/e2eperf/compare.py --baseline "$E/worker-baseline" --candidate "$E/worker-candidate" --cases tests/e2eperf/cases.json --pairs 5 --out "$E/scan-guardrails" > "$E/scan-guardrails-medians.json"
+      - name: Separate CPU heap lock and traced syscall evidence for both versions
+        shell: bash
+        run: |
+          set -euo pipefail
+          E="$RUNNER_TEMP/journal-evidence"
+          for side in baseline candidate; do
+            for kind in cpu trace contention; do
+              python3 tests/e2eperf/run.py --binary "$E/worker-$side" --out "$E/$side-$kind" --count 1024 --payload 1024 --writers 16 --ack-percent 50 --scans 0 --diagnostics "$kind" > "$E/$side-$kind.log"
+            done
+            go tool trace -pprof=syscall "$E/$side-trace/seed/trace.out" > "$E/$side-trace/seed/syscall.pprof"
+            go tool trace -pprof=sync "$E/$side-trace/seed/trace.out" > "$E/$side-trace/seed/sync.pprof"
+            go tool pprof -top -nodecount=20 -sample_index=contentions -focus=syncLocked "$E/worker-$side" "$E/$side-trace/seed/syscall.pprof" > "$E/$side-syscall-count.txt"
+            go tool pprof -top -nodecount=20 "$E/worker-$side" "$E/$side-trace/seed/syscall.pprof" > "$E/$side-syscall-delay.txt"
+            go tool pprof -top -nodecount=20 "$E/worker-$side" "$E/$side-contention/seed/mutex.pprof" > "$E/$side-mutex.txt"
+            go tool pprof -top -nodecount=20 -tagfocus=phase=append_sync_deliver_ack "$E/worker-$side" "$E/$side-cpu/seed/cpu.pprof" > "$E/$side-cpu.txt"
+            go tool pprof -top -nodecount=20 -sample_index=alloc_space -base="$E/$side-cpu/seed/alloc-before.pprof" "$E/worker-$side" "$E/$side-cpu/seed/alloc.pprof" > "$E/$side-alloc.txt"
+          done
+          cat "$E/baseline-syscall-count.txt" "$E/candidate-syscall-count.txt"
+      - name: Identical-binary measurement control
+        shell: bash
+        run: |
+          set -euo pipefail
+          E="$RUNNER_TEMP/journal-evidence"
+          printf '%s\n' '[{"name":"same-binary","count":1024,"payload":1024,"writers":16,"ack_percent":50,"scans":0}]' > "$E/aa-cases.json"
           python3 tests/e2eperf/compare.py --baseline "$E/worker-candidate" --candidate "$E/worker-candidate" --cases "$E/aa-cases.json" --pairs 5 --out "$E/aa" > "$E/aa-medians.json"
       - name: Retain evidence hashes even after failure
         if: always()
