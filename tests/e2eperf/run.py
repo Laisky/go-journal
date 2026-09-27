@@ -15,8 +15,11 @@ import shutil
 import socket
 import statistics
 import subprocess
+import sys
 import threading
 import time
+
+from supervised_exec import install_signal_handlers
 
 
 def require(value, message):
@@ -149,7 +152,8 @@ def launch(binary, root, mode, options, peer, *, hold=False, scan_duration=0):
     args = [str(binary), '--mode', mode, '--dir', str(root / 'wal'), '--out', str(out),
             '--sink', peer.url, '--token', options['token'], '--count', str(options['count']),
             '--payload', str(options['payload']), '--writers', str(options['writers']),
-            '--ack-percent', str(options['ack_percent']), '--scans', str(options['scans'])]
+            '--ack-percent', str(options['ack_percent']), '--scans', str(options['scans']),
+            '--rotate-every', str(options.get('rotate_every', 0))]
     if options['gzip']:
         args.append('--gzip')
     if hold:
@@ -162,8 +166,9 @@ def launch(binary, root, mode, options, peer, *, hold=False, scan_duration=0):
     save(out / 'command.json', args)
     samples = []
     started = time.monotonic_ns()
+    guarded = [sys.executable, str(Path(__file__).with_name('supervised_exec.py')), str(os.getpid()), *args]
     with open(out / 'worker.log', 'xb', buffering=0) as log:
-        process = subprocess.Popen(args, stdout=log, stderr=subprocess.STDOUT)
+        process = subprocess.Popen(guarded, stdout=log, stderr=subprocess.STDOUT)
         try:
             deadline = time.monotonic() + options['timeout']
             while process.poll() is None:
@@ -221,6 +226,8 @@ def audit_data(options, results, processes, rows, errors):
     """Reject lost/changed/invented messages, false ACK order and broken recovery."""
     require(not errors, f'downstream errors: {errors}')
     n, size = options['count'], options['payload']
+    rotate = options.get('rotate_every', 0)
+    require(type(rotate) is int and 0 <= rotate <= n and (not rotate or n // rotate <= 256), 'rotation workload bound')
     expected = set(range(1, n + 1))
     acknowledged = {identity for identity in expected if identity % 100 < options['ack_percent']}
     pending = expected - acknowledged
@@ -228,6 +235,8 @@ def audit_data(options, results, processes, rows, errors):
         result = results[mode]
         require(result['mode'] == mode and result['count'] == n, 'wrong workload/stage')
         require(result.get('diagnostic', '') == options.get('diagnostics', ''), 'diagnostic metadata mismatch')
+        rotations = result.get('rotations', 0)
+        require(type(rotations) is int and rotations == (n // rotate if mode == 'seed' and rotate else 0), 'changed rotation workload')
         process = processes[mode]
         require(process['returncode'] == (-9 if mode in ('seed', 'transfer') else 0), 'wrong process exit')
         require(process['held'] == (mode in ('seed', 'transfer')), 'wrong checkpoint mode')
@@ -271,7 +280,7 @@ def audit(root):
         kind = options.get('diagnostics') or ('diagnostic' if options.get('profile_seconds') else '')
         require(s.get('diagnostic', '') == kind, 'scan diagnostic metadata mismatch')
         require(s['mode'] == 'scan' and s['count'] == options['count'], 'changed scan identity')
-        require(s['high'] == options['count'] and not s['records'], 'scan mutated records/frontier')
+        require(s['high'] == options['count'] and not s['records'] and s.get('rotations', 0) == 0, 'scan mutated records/frontier')
         require(read(root / 'scan/process.json')['returncode'] == 0, 'scan failed')
         p = next(p for p in s['phases'] if p['name'] == 'scan')
         require(p['ops'] == len(p['latency_ns']) and p['ops'] > 0, 'scan work count')
@@ -290,7 +299,9 @@ def audit(root):
             allocated = p['After']['total_alloc'] - p['Before']['total_alloc']
             entry = {'seconds': elapsed, 'cpu_seconds': cpu, 'allocated_bytes': allocated,
                      'peak_rss_mib': p['After']['peak_rss_kib'] / 1024, 'ops': p['ops'],
-                     'cpu_cores': cpu / elapsed}
+                     'cpu_cores': cpu / elapsed,
+                     'gc_cycles': p['After']['num_gc'] - p['Before']['num_gc'],
+                     'mallocs': p['After']['mallocs'] - p['Before']['mallocs']}
             if p['name'] == 'scan':
                 work = n * p['ops']
                 entry.update(records_s=work / elapsed, allocated_bytes_per_record=allocated / work,
@@ -338,6 +349,7 @@ def run_trial(binary, root, options):
 
 
 def main():
+    install_signal_handlers()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--audit-only', type=Path)
     parser.add_argument('--binary', type=Path)
@@ -347,6 +359,7 @@ def main():
     parser.add_argument('--writers', type=int, default=4)
     parser.add_argument('--ack-percent', type=int, default=50)
     parser.add_argument('--scans', type=int, default=4)
+    parser.add_argument('--rotate-every', type=int, default=0)
     parser.add_argument('--gzip', action='store_true')
     parser.add_argument('--timeout', type=float, default=180)
     parser.add_argument('--profile-seconds', type=int, default=0)
@@ -364,6 +377,7 @@ def main():
     require(args.count * (args.payload + 256) <= 2 << 30, 'synthetic disk-work bound (2 GiB)')
     require(1 <= args.writers <= 128 and 0 <= args.ack_percent <= 100, 'concurrency/ACK bounds')
     require(0 <= args.scans <= 10000 and 0 <= args.profile_seconds <= 600 and 0 < args.timeout <= 3600, 'time/scan bounds')
+    require(0 <= args.rotate_every <= args.count and (not args.rotate_every or args.count // args.rotate_every <= 256), 'rotation workload bound')
     require(not args.profile_seconds or args.scans, 'profiles require scanning')
     options = {k: v for k, v in vars(args).items() if k not in ('binary', 'out', 'audit_only')}
     options['token'] = os.urandom(16).hex()
