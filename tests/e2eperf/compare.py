@@ -3,6 +3,9 @@
 import argparse
 import hashlib
 import json
+import math
+import os
+import signal
 from pathlib import Path
 import shutil
 import statistics
@@ -10,6 +13,33 @@ import subprocess
 import sys
 
 from report import analyze
+
+
+def trial_deadline(case):
+    seconds = case.get('timeout', 180)
+    if type(seconds) not in (int, float) or not math.isfinite(seconds) or not 0 < seconds <= 3600:
+        raise ValueError('invalid worker deadline')
+    return 5 * seconds + 30  # At most five independently supervised stages.
+
+
+def run_supervisor(cmd, log, timeout):
+    process = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+
+    def terminate():
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        process.wait()
+
+    try:
+        return process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        terminate()  # Kill the controller AND its worker; never leak a load.
+        return 124
+    except BaseException:
+        terminate()
+        raise
 
 
 def main():
@@ -54,11 +84,11 @@ def main():
                     else:
                         cmd += ['--' + key.replace('_', '-'), str(value)]
                 with open(root / (target.name + '.log'), 'x') as log:
-                    result = subprocess.run(cmd, stdout=log, stderr=subprocess.STDOUT, timeout=900)
-                trial = {'case': case['name'], 'pair': pair, 'side': side, 'returncode': result.returncode}
+                    code = run_supervisor(cmd, log, trial_deadline(case))
+                trial = {'case': case['name'], 'pair': pair, 'side': side, 'returncode': code}
                 report['trials'].append(trial)
                 persist()
-                if result.returncode:
+                if code:
                     raise RuntimeError(f'{target.name} failed; all artifacts retained, no retry')
                 subprocess.run([sys.executable, str(driver), '--audit-only', str(target)], stdout=subprocess.DEVNULL, check=True)
                 trial['summary'] = json.loads((target / 'summary.json').read_text())
