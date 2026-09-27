@@ -13,6 +13,7 @@ import threading
 import time
 
 from compare import run_supervisor
+from supervised_exec import install_signal_handlers
 
 
 COUNTERS = {
@@ -89,6 +90,7 @@ def observe(command, out, timeout, interval=1.0):
 
 
 def main():
+    install_signal_handlers()
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--out', type=Path, required=True)
     p.add_argument('--timeout', type=float, default=1800)
