@@ -30,7 +30,14 @@ func (dec *DataDecoder) readWithAcknowledgement(data *Data, acknowledged func(in
 	if err != nil {
 		return false, err
 	}
-	if id, size, ok := inspectReplayRecord(b); ok && acknowledged(id) {
+	// The generated decoder preserves fields absent from a later envelope.
+	// Materialize the last record before an unfamiliar or cross-buffer record
+	// (and before a segment boundary), so fallback sees exactly the state the
+	// old decoder would have left. Only skip when the next complete canonical
+	// envelope is already buffered and will overwrite both fields. Check this
+	// BEFORE consuming an acknowledgement: consume-once callbacks cannot be
+	// queried optimistically and queried again after choosing the slow path.
+	if id, size, ok := inspectReplayRecord(b); ok && hasIndependentSuccessor(b[size:]) && acknowledged(id) {
 		// size has been proved <= Buffered; Skip cannot perform I/O here.
 		_, err = r.Skip(size)
 		return true, err
@@ -40,6 +47,13 @@ func (dec *DataDecoder) readWithAcknowledgement(data *Data, acknowledged func(in
 	}
 	// Recheck after normal decoding: an ACK may have arrived during the read.
 	return acknowledged(data.ID), nil
+}
+
+// No reads, discarded errors, borrowed state or retained payload are needed
+// for lookahead. An unrecognized successor is merely an optimization miss.
+func hasIndependentSuccessor(b []byte) bool {
+	_, _, ok := inspectReplayRecord(b)
+	return ok
 }
 
 // inspectReplayRecord recognizes exactly one Data map and one integer ID in
