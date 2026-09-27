@@ -73,8 +73,8 @@ func (l *LegacyLoader) Reset(dataFNames, idsFNames []string) {
 	defer l.Unlock()
 
 	l.logger.Debug("reset legacy loader",
-		zap.Strings("data_files", dataFnames),
-		zap.Strings("ids_files", idsFnames))
+		zap.Strings("data_files", dataFNames),
+		zap.Strings("ids_files", idsFNames))
 	// A new snapshot invalidates a partially consumed cursor. Restarting the
 	// scan can repeat complete records, but must never delete an unread segment.
 	if l.dataFp != nil {
@@ -87,9 +87,9 @@ func (l *LegacyLoader) Reset(dataFNames, idsFNames []string) {
 	l.isNeedReload = true
 	l.cleanup = nil
 	l.dataFileIdx, l.dataFilesLen = -1, 0
-	l.dataFNames = dataFnames
-	l.idsFNames = idsFnames
-	l.isReadyReload = len(dataFnames) != 0 || len(idsFnames) != 0
+	l.dataFNames = dataFNames
+	l.idsFNames = idsFNames
+	l.isReadyReload = len(dataFNames) != 0 || len(idsFNames) != 0
 }
 
 // GetIdsLen return length of ids
