@@ -61,6 +61,12 @@ jobs:
                   m=metrics[key]
                   print(case,key,m['baseline_median'],m['candidate_median'],m['median_ratio'],m['status'])
           PY
+      - name: Twelve-case concurrency ACK and codec stress matrix
+        shell: bash
+        run: |
+          set -euo pipefail
+          E="$RUNNER_TEMP/journal-evidence"
+          python3 tests/e2eperf/stress.py --baseline "$E/worker-baseline" --candidate "$E/worker-candidate" --out "$E/stress" --count 512 --payloads 1024 --writers 1,8,32 --ack-percents 0,100 --codecs plain,gzip --scans 0 --pairs 5 > "$E/stress-medians.txt"
       - name: Full behavior race fuzz and executable negative controls
         shell: bash
         run: |
@@ -93,7 +99,7 @@ jobs:
             go tool pprof -top -nodecount=15 "$E/worker-candidate" "$E/diagnostic-contention/$mode/mutex.pprof" > "$E/$mode-mutex.txt"
           done
           cat "$E/oversize-candidate-alloc.txt" "$E/seed-trace-sync.txt"
-      - name: Isolated hypothesis - inspect already buffered large records
+      - name: Isolated hypothesis - reduce large-file read buffer to 1 MiB
         shell: bash
         run: |
           set -euo pipefail
@@ -101,12 +107,11 @@ jobs:
           git worktree add --detach "$RUNNER_TEMP/journal-experiment" HEAD
           python3 - <<'PY'
           import os, pathlib
-          p=pathlib.Path(os.environ['RUNNER_TEMP'])/'journal-experiment/selective.go'
+          p=pathlib.Path(os.environ['RUNNER_TEMP'])/'journal-experiment/serialize.go'
           text=p.read_text()
-          prefix, body=text.split('func (dec *DataDecoder) readRecordID()',1)
-          cap='\tif n > maxSelectiveRecordBytes {\n\t\tn = maxSelectiveRecordBytes\n\t}\n'
-          assert body.count(cap)==1, 'hypothesis no longer applies; update the campaign explicitly'
-          p.write_text(prefix+'func (dec *DataDecoder) readRecordID()'+body.replace(cap,'',1))
+          old='\t\t\tsize = BufSize\n'
+          assert text.count(old)==1, 'hypothesis no longer applies; update the campaign explicitly'
+          p.write_text(text.replace(old,'\t\t\tsize = 1 << 20\n',1))
           PY
           (cd "$RUNNER_TEMP/journal-experiment" && git diff > "$E/experiment.patch" && go test -mod=readonly -count=1 -json ./... > "$E/experiment-tests.jsonl" && go test -mod=readonly -run '^$' -fuzz '^FuzzIDScanMatchesGenerated$' -fuzztime=8s > "$E/experiment-fuzz.txt" && go build -mod=readonly -trimpath -o "$E/worker-experiment" ./tests/e2eperf)
           printf '%s\n' '[{"name":"plain-oversize","count":128,"payload":262144,"writers":4,"ack_percent":50,"scans":16},{"name":"plain-control","count":512,"payload":16384,"writers":4,"ack_percent":50,"scans":16},{"name":"gzip-control","count":256,"payload":4096,"writers":4,"ack_percent":75,"scans":8,"gzip":true}]' > "$E/experiment-cases.json"
@@ -122,6 +127,13 @@ jobs:
                   print(case,key,m['baseline_median'],m['candidate_median'],m['median_ratio'],m['status'])
           PY
           cat "$E/oversize-experiment-alloc.txt"
+      - name: Identical-binary control for small-phase noise
+        shell: bash
+        run: |
+          set -euo pipefail
+          E="$RUNNER_TEMP/journal-evidence"
+          printf '%s\n' '[{"name":"same-binary","count":512,"payload":16384,"writers":4,"ack_percent":50,"scans":4}]' > "$E/aa-cases.json"
+          python3 tests/e2eperf/compare.py --baseline "$E/worker-candidate" --candidate "$E/worker-candidate" --cases "$E/aa-cases.json" --pairs 5 --out "$E/aa" > "$E/aa-medians.json"
       - name: Retain evidence hashes even after failure
         if: always()
         shell: bash
@@ -137,3 +149,4 @@ jobs:
           path: ${{ runner.temp }}/journal-evidence
           retention-days: 14
           if-no-files-found: error
+          include-hidden-files: true
