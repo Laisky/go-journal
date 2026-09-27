@@ -18,7 +18,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"runtime/pprof"
 	"strconv"
 	"strings"
 	"sync"
@@ -55,11 +54,13 @@ type phase struct {
 	LatencyNS     []int64 `json:"latency_ns"`
 }
 type result struct {
-	Mode    string        `json:"mode"`
-	Count   int           `json:"count"`
-	High    int64         `json:"high"`
-	Phases  []phase       `json:"phases"`
-	Records []observation `json:"records"`
+	Diagnostic  string `json:"diagnostic,omitempty"`
+	diagnostics *diagnostics
+	Mode        string        `json:"mode"`
+	Count       int           `json:"count"`
+	High        int64         `json:"high"`
+	Phases      []phase       `json:"phases"`
+	Records     []observation `json:"records"`
 }
 
 func snapshot() usage {
@@ -93,7 +94,7 @@ func measure(r *result, name string, ops int64, fn func() ([]int64, error)) erro
 	p := phase{Name: name, Ops: ops, Before: snapshot()}
 	start := time.Now()
 	p.Begin = start.UnixNano()
-	lat, err := fn()
+	lat, err := r.diagnostics.phase(name, fn)
 	// Use monotonic elapsed time, not a subtraction of adjustable wall clocks.
 	p.End = p.Begin + time.Since(start).Nanoseconds()
 	p.LatencyNS = lat
@@ -190,20 +191,30 @@ func seed(j *journal.Journal, o options, r *result, client *http.Client) error {
 				body := payload(id, o.Payload)
 				v := observation{ID: id, Hash: hash(body)}
 				v.Begin = time.Since(epoch).Nanoseconds()
+				region := r.diagnostics.region("WriteData")
 				err := j.WriteData(&journal.Data{ID: id, Data: map[string]interface{}{"id": id, "body": body}})
+				region.end()
 				v.Written = time.Since(epoch).Nanoseconds()
 				if err == nil {
+					region = r.diagnostics.region("Sync/data")
 					err = j.Sync()
+					region.end()
 				}
 				v.Durable = time.Since(epoch).Nanoseconds()
 				if err == nil && initialAck(id, o.AckPercent) {
+					region = r.diagnostics.region("downstream/fsync-receipt")
 					err = deliver(client, o, id, body)
+					region.end()
 					v.Received = time.Since(epoch).Nanoseconds()
 					if err == nil {
+						region = r.diagnostics.region("WriteId")
 						err = j.WriteId(id)
+						region.end()
 					}
 					if err == nil {
+						region = r.diagnostics.region("Sync/ack")
 						err = j.Sync()
+						region.end()
 					}
 					v.Acked = time.Since(epoch).Nanoseconds()
 				}
@@ -232,7 +243,9 @@ func replay(j *journal.Journal, o options, r *result, client *http.Client) error
 	for {
 		begin := time.Since(epoch).Nanoseconds()
 		d := new(journal.Data)
+		region := r.diagnostics.region("LoadLegacyBuf")
 		err := j.LoadLegacyBuf(d)
+		region.end()
 		if err == io.EOF {
 			return nil
 		}
@@ -248,22 +261,37 @@ func replay(j *journal.Journal, o options, r *result, client *http.Client) error
 		v := observation{ID: d.ID, Hash: hash(d.Data["body"].(string)), Begin: begin, Written: time.Since(epoch).Nanoseconds()}
 		if o.Mode == "transfer" {
 			// Copy and synchronize BEFORE requesting another record or EOF cleanup.
-			if err = j.WriteData(d); err != nil {
+			region = r.diagnostics.region("WriteData/transfer")
+			err = j.WriteData(d)
+			region.end()
+			if err != nil {
 				return err
 			}
-			if err = j.Sync(); err != nil {
+			region = r.diagnostics.region("Sync/replay")
+			err = j.Sync()
+			region.end()
+			if err != nil {
 				return err
 			}
 			v.Durable = time.Since(epoch).Nanoseconds()
 		} else if o.Mode == "deliver" {
-			if err = deliver(client, o, d.ID, d.Data["body"].(string)); err != nil {
+			region = r.diagnostics.region("downstream/fsync-receipt")
+			err = deliver(client, o, d.ID, d.Data["body"].(string))
+			region.end()
+			if err != nil {
 				return err
 			}
 			v.Received = time.Since(epoch).Nanoseconds()
-			if err = j.WriteId(d.ID); err != nil {
+			region = r.diagnostics.region("WriteId/replay")
+			err = j.WriteId(d.ID)
+			region.end()
+			if err != nil {
 				return err
 			}
-			if err = j.Sync(); err != nil {
+			region = r.diagnostics.region("Sync/replay")
+			err = j.Sync()
+			region.end()
+			if err != nil {
 				return err
 			}
 			v.Acked = time.Since(epoch).Nanoseconds()
@@ -281,7 +309,12 @@ func run(o options) (err error) {
 	if err = os.MkdirAll(o.Out, 0700); err != nil {
 		return err
 	}
-	r := result{Mode: o.Mode, Count: o.Count, Records: []observation{}}
+	diag, err := startDiagnostics(o.Out, o.Profile)
+	if err != nil {
+		return err
+	}
+	defer func() { err = errors.Join(err, diag.close()) }()
+	r := result{Mode: o.Mode, Count: o.Count, Records: []observation{}, Diagnostic: o.Profile, diagnostics: diag}
 	var j *journal.Journal
 	err = measure(&r, "open", 1, func() ([]int64, error) {
 		var e error
@@ -309,40 +342,6 @@ func run(o options) (err error) {
 		if r.High != int64(o.Count) {
 			return fmt.Errorf("frontier %d, want %d", r.High, o.Count)
 		}
-	}
-	var profileFile *os.File
-	stopProfile := func() error {
-		if profileFile == nil {
-			return nil
-		}
-		pprof.StopCPUProfile()
-		e := profileFile.Close()
-		profileFile = nil
-		return e
-	}
-	defer func() { err = errors.Join(err, stopProfile()) }()
-	if o.Profile != "" {
-		if o.Mode != "scan" {
-			return errors.New("profiles require separate scan mode")
-		}
-		runtime.GC()
-		before, e := os.Create(filepath.Join(o.Out, "alloc-before.pprof"))
-		if e != nil {
-			return e
-		}
-		e = errors.Join(pprof.Lookup("allocs").WriteTo(before, 0), before.Close())
-		if e != nil {
-			return e
-		}
-		f, e := os.Create(filepath.Join(o.Out, "cpu.pprof"))
-		if e != nil {
-			return e
-		}
-		if e = pprof.StartCPUProfile(f); e != nil {
-			f.Close()
-			return e
-		}
-		profileFile = f
 	}
 	switch o.Mode {
 	case "seed":
@@ -386,7 +385,6 @@ func run(o options) (err error) {
 	default:
 		return errors.New("unknown mode")
 	}
-	err = errors.Join(err, stopProfile())
 	if err != nil {
 		return err
 	}
@@ -399,17 +397,9 @@ func run(o options) (err error) {
 	if err = j.Sync(); err != nil {
 		return err
 	}
-	if o.Profile != "" {
-		runtime.GC()
-		f, e := os.Create(filepath.Join(o.Out, "alloc.pprof"))
-		if e != nil {
-			return e
-		}
-		e = pprof.Lookup("allocs").WriteTo(f, 0)
-		e = errors.Join(e, f.Close())
-		if e != nil {
-			return e
-		}
+	// Close before publishing the checkpoint: SIGKILL must not truncate profiles.
+	if err = diag.close(); err != nil {
+		return err
 	}
 	if err = save(filepath.Join(o.Out, "result.json"), r); err != nil {
 		return err
@@ -430,7 +420,7 @@ func main() {
 	flag.StringVar(&o.Out, "out", "", "new phase evidence directory")
 	flag.StringVar(&o.Sink, "sink", "", "independent loopback peer")
 	flag.StringVar(&o.Token, "token", "", "local peer token")
-	flag.StringVar(&o.Profile, "profile", "", "nonempty: diagnostic-only CPU/alloc capture")
+	flag.StringVar(&o.Profile, "profile", "", "diagnostic-only cpu|trace|contention (all lifecycle modes)")
 	flag.IntVar(&o.Count, "count", 2048, "total source records")
 	flag.IntVar(&o.Payload, "payload", 16384, "text bytes excluding identity prefix")
 	flag.IntVar(&o.Writers, "writers", 4, "concurrent public API callers")
@@ -440,7 +430,7 @@ func main() {
 	flag.BoolVar(&o.Gzip, "gzip", false, "gzip journal")
 	flag.BoolVar(&o.Hold, "hold", false, "hold durable checkpoint until supervisor SIGKILL")
 	flag.Parse()
-	if o.Dir == "" || o.Out == "" || o.Count < 1 || o.Count > 1000000 || o.Payload < 0 || o.Payload > 4<<20 || o.Writers < 1 || o.Writers > 128 || o.AckPercent < 0 || o.AckPercent > 100 || o.Scans < 1 || o.Scans > 10000 || o.ScanSeconds < 0 || o.ScanSeconds > 10*time.Minute {
+	if o.Dir == "" || o.Out == "" || o.Count < 1 || o.Count > 1000000 || o.Payload < 0 || o.Payload > 4<<20 || o.Writers < 1 || o.Writers > 128 || o.AckPercent < 0 || o.AckPercent > 100 || o.Scans < 0 || (o.Mode == "scan" && o.Scans == 0) || o.Scans > 10000 || o.ScanSeconds < 0 || o.ScanSeconds > 10*time.Minute {
 		fmt.Fprintln(os.Stderr, "invalid options")
 		os.Exit(2)
 	}
