@@ -1,0 +1,8 @@
+[
+  {"name":"plain-ack-128-segments","count":1024,"payload":256,"writers":1,"ack_percent":100,"scans":16,"rotate_every":8},
+  {"name":"plain-sparse-32-segments","count":1024,"payload":256,"writers":1,"ack_percent":50,"scans":16,"rotate_every":32},
+  {"name":"plain-concurrent-ack","count":512,"payload":1024,"writers":8,"ack_percent":50,"scans":4,"rotate_every":16},
+  {"name":"plain-empty-ack-control","count":512,"payload":256,"writers":1,"ack_percent":0,"scans":16,"rotate_every":16},
+  {"name":"gzip-ack-control","count":256,"payload":1024,"writers":4,"ack_percent":100,"scans":4,"rotate_every":16,"gzip":true},
+  {"name":"plain-single-ack-control","count":512,"payload":1024,"writers":4,"ack_percent":100,"scans":4,"rotate_every":0}
+]
