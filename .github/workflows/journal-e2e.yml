@@ -24,100 +24,98 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           go-version: '1.27.1'
-      - name: Freeze baseline and isolated 4 KiB and 256 B writer hypotheses
+      - name: Freeze identical worker and isolated scan-buffer integration
         shell: bash
         run: |
           set -euo pipefail
-          E="$RUNNER_TEMP/writer-evidence"
+          E="$RUNNER_TEMP/scan-evidence"
           mkdir -p "$E"
           git rev-parse HEAD HEAD^{tree} > "$E/source.txt"
           git archive --format=tar.gz HEAD > "$E/source.tar.gz"
           git archive --format=tar.gz "$BASELINE" > "$E/baseline-source.tar.gz"
-          printf 'baseline=%s\ncandidate=isolated-4096\ntiny=isolated-256\n' "$BASELINE" > "$E/campaign.txt"
+          printf 'baseline=%s\ncandidate=HEAD plus candidate.patch\n' "$BASELINE" > "$E/campaign.txt"
           go version > "$E/toolchain.txt"
           cp go.mod go.sum "$E/"
           go mod download
           go mod verify > "$E/module-verify.txt"
           python3 -m unittest discover -s tests/e2eperf -p 'test_*.py' -v > "$E/python-tests.txt" 2>&1
-          for side in baseline candidate tiny; do
-            T="$RUNNER_TEMP/writer-$side"
+          for side in baseline candidate; do
+            T="$RUNNER_TEMP/scan-$side"
             ref=HEAD
             if [ "$side" = baseline ]; then ref="$BASELINE"; fi
             git worktree add --detach "$T" "$ref"
             cmp go.mod "$T/go.mod"
             cmp go.sum "$T/go.sum"
             cp tests/e2eperf/*.go "$T/tests/e2eperf/"
-            cp writer_buffer_test.go "$T/writer_buffer_test.go"
-            if [ "$side" = candidate ]; then python3 tests/e2eperf/writer_experiment.py --source "$T" --size 4096; fi
-            if [ "$side" = tiny ]; then python3 tests/e2eperf/writer_experiment.py --source "$T" --size 256; fi
-            (cd "$T" && git diff -- serialize.go > "$E/$side.patch" && go build -mod=readonly -trimpath -o "$E/worker-$side" ./tests/e2eperf)
+            cp scan_buffers.go scan_buffers_test.go writer_buffer_test.go "$T/"
+            if [ "$side" = candidate ]; then python3 tests/e2eperf/scan_experiment.py --source "$T"; fi
+            (cd "$T" && git diff -- legacy.go serialize.go > "$E/$side.patch" && go build -mod=readonly -trimpath -o "$E/worker-$side" ./tests/e2eperf)
             go version -m "$E/worker-$side" > "$E/build-$side.txt"
           done
-          sha256sum "$E"/worker-* tests/e2eperf/*.* writer_buffer_test.go > "$E/build-hashes.txt"
-      - name: Behavior error visibility race crash and negative controls
+          sha256sum "$E"/worker-* tests/e2eperf/*.* scan_buffers*.go writer_buffer_test.go > "$E/build-hashes.txt"
+      - name: Native behavior race error reset immediate crash and negative controls
         shell: bash
         run: |
           set -euo pipefail
-          E="$RUNNER_TEMP/writer-evidence"
-          for side in baseline candidate tiny; do
-            (cd "$RUNNER_TEMP/writer-$side" && go test -mod=readonly -run '^TestWriterBuffer' -count=1 -json ./... > "$E/$side-buffer-tests.jsonl" && go test -mod=readonly -run '^$' -bench '^BenchmarkWriterPairConstruction$' -benchmem -benchtime=200ms -count=5 > "$E/$side-construction.txt")
-          done
-          cd "$RUNNER_TEMP/writer-candidate"
+          E="$RUNNER_TEMP/scan-evidence"
+          (cd "$RUNNER_TEMP/scan-baseline" && go test -mod=readonly -count=1 -run 'TestScanBuffer|TestConcurrentMultiSegment|TestSeedRotation|TestWriterBuffer' -json ./... > "$E/baseline-boundaries.jsonl")
+          cd "$RUNNER_TEMP/scan-candidate"
           go vet -mod=readonly ./... > "$E/vet.txt" 2>&1
           go test -mod=readonly -count=1 -json ./... > "$E/full.jsonl"
           go test -mod=readonly -race -shuffle=on -count=3 -json ./... > "$E/race.jsonl"
           go test -mod=readonly -run '^$' -fuzz '^FuzzIDScanMatchesGenerated$' -fuzztime=8s > "$E/maxid-fuzz.txt"
           python3 tests/e2eperf/negative.py --out "$E/negative" > "$E/negative-summary.json"
           python3 tests/e2eperf/sync_experiment.py --source . --negative "$E/sync-negative" > "$E/sync-negative-summary.json"
-          (cd "$RUNNER_TEMP/writer-tiny" && go test -mod=readonly -race -count=3 -run '^TestWriterBuffer' -json ./... > "$E/tiny-race.jsonl")
-      - name: Pre-campaign identical-binary control
+          python3 tests/e2eperf/segment_negative.py --out "$E/segment-negative" > "$E/segment-negative-summary.json"
+          git diff --exit-code -- go.mod go.sum
+      - name: Pre-campaign A-A controls
         shell: bash
         run: |
           set -euo pipefail
-          E="$RUNNER_TEMP/writer-evidence"
-          printf '%s\n' '[{"name":"same-binary","count":1024,"payload":1024,"writers":16,"ack_percent":50,"scans":0}]' > "$E/aa-cases.json"
+          E="$RUNNER_TEMP/scan-evidence"
+          printf '%s\n' '[{"name":"same-binary","count":1024,"payload":1024,"writers":16,"ack_percent":50,"scans":0},{"name":"same-scan","count":512,"payload":65536,"writers":1,"ack_percent":50,"scans":16,"rotate_every":64}]' > "$E/aa-cases.json"
           python3 tests/e2eperf/observe.py --out "$E/host-before" -- python3 tests/e2eperf/compare.py --baseline "$E/worker-candidate" --candidate "$E/worker-candidate" --cases "$E/aa-cases.json" --pairs 5 --out "$E/aa-before"
-      - name: Five matched pairs for the 4 KiB writer candidate
+      - name: Multi-segment paired lifecycle measurements
         shell: bash
         run: |
           set -euo pipefail
-          E="$RUNNER_TEMP/writer-evidence"
-          python3 tests/e2eperf/observe.py --out "$E/host-writer" -- python3 tests/e2eperf/compare.py --baseline "$E/worker-baseline" --candidate "$E/worker-candidate" --cases tests/e2eperf/writer_cases.json --pairs 5 --out "$E/writer-paired"
-      - name: Next isolated iteration - 256 B versus 4 KiB writer
+          E="$RUNNER_TEMP/scan-evidence"
+          python3 tests/e2eperf/observe.py --out "$E/host-segments" -- python3 tests/e2eperf/compare.py --baseline "$E/worker-baseline" --candidate "$E/worker-candidate" --cases tests/e2eperf/segment_cases.json --pairs 5 --out "$E/segment-paired"
+      - name: Existing single-segment and large-record guardrails
         shell: bash
         run: |
           set -euo pipefail
-          E="$RUNNER_TEMP/writer-evidence"
-          python3 tests/e2eperf/observe.py --out "$E/host-tiny" -- python3 tests/e2eperf/compare.py --baseline "$E/worker-candidate" --candidate "$E/worker-tiny" --cases tests/e2eperf/writer_cases.json --pairs 5 --out "$E/tiny-paired"
-      - name: Post-campaign identical-binary control and qualification
+          E="$RUNNER_TEMP/scan-evidence"
+          python3 tests/e2eperf/observe.py --out "$E/host-guardrails" -- python3 tests/e2eperf/compare.py --baseline "$E/worker-baseline" --candidate "$E/worker-candidate" --cases tests/e2eperf/writer_cases.json --pairs 5 --out "$E/guardrails"
+      - name: Post-campaign A-A controls and timing qualification
         shell: bash
         run: |
           set -euo pipefail
-          E="$RUNNER_TEMP/writer-evidence"
+          E="$RUNNER_TEMP/scan-evidence"
           python3 tests/e2eperf/observe.py --out "$E/host-after" -- python3 tests/e2eperf/compare.py --baseline "$E/worker-candidate" --candidate "$E/worker-candidate" --cases "$E/aa-cases.json" --pairs 5 --out "$E/aa-after"
           python3 tests/e2eperf/qualify.py --before "$E/aa-before/report.json" --after "$E/aa-after/report.json" > "$E/timing-qualification.json"
           cat "$E/timing-qualification.json"
-      - name: Separate whole-worker allocation heap CPU and trace evidence
+      - name: Fixed-work separate CPU allocation heap and trace diagnostics
         shell: bash
         run: |
           set -euo pipefail
-          E="$RUNNER_TEMP/writer-evidence"
+          E="$RUNNER_TEMP/scan-evidence"
           for side in baseline candidate; do
             for kind in cpu trace; do
-              python3 tests/e2eperf/run.py --binary "$E/worker-$side" --out "$E/$side-$kind" --count 1024 --payload 1024 --writers 16 --ack-percent 50 --scans 0 --diagnostics "$kind" > "$E/$side-$kind.log"
+              python3 tests/e2eperf/run.py --binary "$E/worker-$side" --out "$E/$side-$kind" --count 512 --payload 65536 --writers 1 --ack-percent 50 --scans 64 --rotate-every 64 --diagnostics "$kind" > "$E/$side-$kind.log"
             done
-            go tool pprof -top -nodecount=20 -sample_index=alloc_space -base="$E/$side-cpu/seed/alloc-before.pprof" "$E/worker-$side" "$E/$side-cpu/seed/alloc.pprof" > "$E/$side-alloc.txt"
-            go tool pprof -top -nodecount=20 -sample_index=inuse_space "$E/worker-$side" "$E/$side-cpu/seed/heap.pprof" > "$E/$side-heap.txt"
-            go tool trace -pprof=syscall "$E/$side-trace/seed/trace.out" > "$E/$side-trace/seed/syscall.pprof"
-            go tool pprof -top -nodecount=20 "$E/worker-$side" "$E/$side-trace/seed/syscall.pprof" > "$E/$side-syscall.txt"
+            go tool pprof -top -nodecount=20 -sample_index=alloc_space -base="$E/$side-cpu/scan/alloc-before.pprof" "$E/worker-$side" "$E/$side-cpu/scan/alloc.pprof" > "$E/$side-alloc.txt"
+            go tool pprof -top -nodecount=20 -sample_index=inuse_space "$E/worker-$side" "$E/$side-cpu/scan/heap.pprof" > "$E/$side-heap.txt"
+            go tool pprof -top -nodecount=20 -tagfocus=phase=scan "$E/worker-$side" "$E/$side-cpu/scan/cpu.pprof" > "$E/$side-cpu.txt"
+            go tool trace -pprof=syscall "$E/$side-trace/scan/trace.out" > "$E/$side-trace/scan/syscall.pprof"
+            go tool pprof -top -nodecount=20 "$E/worker-$side" "$E/$side-trace/scan/syscall.pprof" > "$E/$side-syscall.txt"
           done
-          cat "$E/baseline-construction.txt" "$E/candidate-construction.txt" "$E/tiny-construction.txt"
           cat "$E/baseline-alloc.txt" "$E/candidate-alloc.txt"
       - name: Retain evidence hashes even after failure
         if: always()
         shell: bash
         run: |
-          E="$RUNNER_TEMP/writer-evidence"
+          E="$RUNNER_TEMP/scan-evidence"
           mkdir -p "$E"
           cd "$E"
           find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
@@ -125,18 +123,18 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          E="$RUNNER_TEMP/writer-evidence"
+          E="$RUNNER_TEMP/scan-evidence"
           python3 tests/e2eperf/verify.py --root "$E" \
-            --campaign writer-paired=worker-baseline,worker-candidate \
-            --campaign tiny-paired=worker-candidate,worker-tiny \
+            --campaign segment-paired=worker-baseline,worker-candidate \
+            --campaign guardrails=worker-baseline,worker-candidate \
             --campaign aa-before=worker-candidate,worker-candidate \
-            --campaign aa-after=worker-candidate,worker-candidate > "$RUNNER_TEMP/verified-writer.json"
-          cat "$RUNNER_TEMP/verified-writer.json"
+            --campaign aa-after=worker-candidate,worker-candidate > "$RUNNER_TEMP/verified-scan.json"
+          cat "$RUNNER_TEMP/verified-scan.json"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
-          name: journal-writer-${{ github.event.pull_request.head.sha || github.sha }}
-          path: ${{ runner.temp }}/writer-evidence
+          name: journal-scan-${{ github.event.pull_request.head.sha || github.sha }}
+          path: ${{ runner.temp }}/scan-evidence
           retention-days: 14
           if-no-files-found: error
           include-hidden-files: true
