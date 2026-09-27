@@ -31,13 +31,13 @@ import (
 type options struct {
 	Mode, Dir, Out, Sink, Token, Profile       string
 	Count, Payload, Writers, AckPercent, Scans int
-	RotateEvery                              int
-	Gzip, Hold                               bool
-	ScanSeconds                              time.Duration
+	RotateEvery                                int
+	Gzip, Hold                                 bool
+	ScanSeconds                                time.Duration
 }
 type observation struct {
-	ID                                     int64  `json:"id"`
-	Hash                                   string `json:"hash"`
+	ID                                       int64  `json:"id"`
+	Hash                                     string `json:"hash"`
 	Begin, Written, Durable, Received, Acked int64
 }
 type usage struct {
