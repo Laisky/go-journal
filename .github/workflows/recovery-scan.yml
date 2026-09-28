@@ -1,0 +1,139 @@
+name: Recovery scan experiments
+on:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: recovery-scan-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  measured:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      GOTOOLCHAIN: local
+      GOMAXPROCS: '4'
+      BASELINE: b4792253d0260b0cae0c5731c5dad4d755646c56
+      CANDIDATE_MODE: isolated
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version: '1.27.1'
+      - name: Freeze source and independently build each hypothesis
+        shell: bash
+        run: |
+          set -euo pipefail
+          E="$RUNNER_TEMP/recovery-evidence"
+          mkdir -p "$E"
+          git rev-parse HEAD HEAD^{tree} > "$E/source.txt"
+          git archive --format=tar.gz HEAD > "$E/source.tar.gz"
+          git archive --format=tar.gz "$BASELINE" > "$E/baseline-source.tar.gz"
+          printf 'baseline=%s\nmode=%s\n' "$BASELINE" "$CANDIDATE_MODE" > "$E/campaign.txt"
+          go version > "$E/toolchain.txt"
+          go env -json GOARCH GOOS GOEXPERIMENT CGO_ENABLED GOAMD64 > "$E/compiler-env.json"
+          cp go.mod go.sum "$E/"
+          go mod download
+          go mod verify > "$E/module-verify.txt"
+          test -z "$(gofmt -l ack_*.go directory_*test.go)"
+          python3 -m unittest discover -s tests/e2eperf -p 'test_*.py' -v > "$E/python-tests.txt" 2>&1
+          for side in baseline batch directory candidate; do
+            T="$RUNNER_TEMP/recovery-$side"
+            ref="$BASELINE"
+            if [ "$side" = candidate ]; then ref=HEAD; fi
+            git worktree add --detach "$T" "$ref"
+            cmp go.mod "$T/go.mod"; cmp go.sum "$T/go.sum"
+            cp ack_*.go directory_*test.go "$T/"
+            cp tests/e2eperf/*.go "$T/tests/e2eperf/"
+            variant="$side"
+            if [ "$side" = candidate ]; then variant=combined; fi
+            if [ "$side" != baseline ] && { [ "$side" != candidate ] || [ "$CANDIDATE_MODE" = isolated ]; }; then
+              python3 tests/e2eperf/recovery_experiment.py --source "$T" --variant "$variant"
+              gofmt -w "$T/serialize.go" "$T/fs.go"
+            fi
+            (cd "$T" && git diff -- fs.go serialize.go > "$E/$side.patch" && go build -mod=readonly -trimpath -o "$E/worker-$side" ./tests/e2eperf && go test -mod=readonly -trimpath -c -o "$E/bench-$side" .)
+            go version -m "$E/worker-$side" > "$E/build-$side.txt"
+          done
+          if [ "$CANDIDATE_MODE" = adopted ]; then test ! -s "$E/candidate.patch"; else test -s "$E/candidate.patch"; fi
+      - name: Candidate behavior and differential error state tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          E="$RUNNER_TEMP/recovery-evidence"
+          (cd "$RUNNER_TEMP/recovery-baseline" && go test -mod=readonly -count=1 -run 'Test(ACKMaximum|DirectorySnapshot)' -json . > "$E/baseline-tests.jsonl")
+          cd "$RUNNER_TEMP/recovery-candidate"
+          go vet -mod=readonly ./... > "$E/vet.txt" 2>&1
+          go test -mod=readonly -count=1 -json ./... > "$E/full.jsonl"
+          go test -mod=readonly -race -shuffle=on -count=3 -json ./... > "$E/race.jsonl"
+          go test -mod=readonly -run '^$' -fuzz '^FuzzACKMaximumMatchesScalar$' -fuzztime=10s > "$E/ack-fuzz.txt"
+          go test -mod=readonly -run '^$' -fuzz '^FuzzIDScanMatchesGenerated$' -fuzztime=8s > "$E/id-fuzz.txt"
+          git diff --exit-code -- go.mod go.sum
+      - name: Isolate ACK decoding and directory preparation public API effects
+        shell: bash
+        run: |
+          set -euo pipefail
+          E="$RUNNER_TEMP/recovery-evidence"
+          python3 tests/e2eperf/bench_pairs.py --baseline "$E/bench-baseline" --candidate "$E/bench-batch" --suite ack --pairs 5 --iterations 64 --out "$E/ack-public" > "$E/ack-public.json"
+          python3 tests/e2eperf/bench_pairs.py --baseline "$E/bench-baseline" --candidate "$E/bench-directory" --suite directory --pairs 5 --iterations 32 --out "$E/directory-public" > "$E/directory-public.json"
+          python3 tests/e2eperf/bench_pairs.py --baseline "$E/bench-candidate" --candidate "$E/bench-candidate" --suite ack --pairs 5 --iterations 64 --out "$E/ack-aa" > "$E/ack-aa.json"
+          python3 tests/e2eperf/bench_pairs.py --baseline "$E/bench-candidate" --candidate "$E/bench-candidate" --suite directory --pairs 5 --iterations 32 --out "$E/directory-aa" > "$E/directory-aa.json"
+      - name: Full durable lifecycle comparisons and before after controls
+        shell: bash
+        run: |
+          set -euo pipefail
+          E="$RUNNER_TEMP/recovery-evidence"
+          printf '%s\n' '[{"name":"same-small","count":256,"payload":256,"writers":4,"ack_percent":50,"scans":2},{"name":"same-segments","count":256,"payload":1024,"writers":4,"ack_percent":50,"scans":2,"rotate_every":32}]' > "$E/aa-cases.json"
+          python3 tests/e2eperf/observe.py --out "$E/host-before" -- python3 tests/e2eperf/compare.py --baseline "$E/worker-candidate" --candidate "$E/worker-candidate" --cases "$E/aa-cases.json" --pairs 5 --out "$E/aa-before"
+          python3 tests/e2eperf/observe.py --out "$E/host-paired" -- python3 tests/e2eperf/compare.py --baseline "$E/worker-baseline" --candidate "$E/worker-candidate" --cases tests/e2eperf/recovery_cases.json --pairs 5 --out "$E/paired"
+          python3 tests/e2eperf/observe.py --out "$E/host-after" -- python3 tests/e2eperf/compare.py --baseline "$E/worker-candidate" --candidate "$E/worker-candidate" --cases "$E/aa-cases.json" --pairs 5 --out "$E/aa-after"
+          python3 tests/e2eperf/qualify.py --before "$E/aa-before/report.json" --after "$E/aa-after/report.json" > "$E/timing-qualification.json"
+      - name: Separate CPU profile and syscall evidence without timing acceptance
+        shell: bash
+        run: |
+          set -euo pipefail
+          E="$RUNNER_TEMP/recovery-evidence"
+          for side in baseline batch; do
+            "$E/bench-$side" -test.run='^$' -test.bench='^BenchmarkPublicACKFrontier/plain-128k$' -test.benchtime=2048x -test.cpuprofile="$E/$side-ack.cpu" > "$E/$side-profile.log"
+            go tool pprof -top -nodecount=25 -tagfocus=phase=public-ack-scan "$E/bench-$side" "$E/$side-ack.cpu" > "$E/$side-ack-cpu.txt"
+          done
+          for side in baseline directory; do
+            if command -v strace >/dev/null; then
+              strace -f -c -e trace=newfstatat,statx -o "$E/$side-stat-counts.txt" "$E/bench-$side" -test.run='^$' -test.bench='^BenchmarkPublicDirectorySnapshot/4096$' -test.benchtime=32x > "$E/$side-stat-work.log"
+            else
+              echo 'strace unavailable; no syscall count claim' > "$E/$side-stat-counts.txt"
+            fi
+          done
+          for side in baseline candidate; do
+            python3 tests/e2eperf/run.py --binary "$E/worker-$side" --out "$E/$side-trace" --count 512 --payload 256 --writers 4 --ack-percent 50 --rotate-every 4 --scans 2 --diagnostics trace > "$E/$side-trace.log"
+            go tool trace -pprof=syscall "$E/$side-trace/seed/trace.out" > "$E/$side-seed-syscall.pprof"
+          done
+      - name: Preserve every observation including failures
+        if: always()
+        shell: bash
+        run: |
+          E="$RUNNER_TEMP/recovery-evidence"
+          mkdir -p "$E";cd "$E"
+          find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
+      - name: Recompute raw public benchmarks and all E2E audits
+        shell: bash
+        run: |
+          set -euo pipefail
+          E="$RUNNER_TEMP/recovery-evidence"
+          for campaign in ack-public directory-public ack-aa directory-aa; do
+            python3 tests/e2eperf/bench_pairs.py --verify "$E/$campaign" > /dev/null
+          done
+          python3 tests/e2eperf/verify.py --root "$E" --campaign paired=worker-baseline,worker-candidate --campaign aa-before=worker-candidate,worker-candidate --campaign aa-after=worker-candidate,worker-candidate > "$RUNNER_TEMP/recovery-verified.json"
+          cat "$RUNNER_TEMP/recovery-verified.json"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: recovery-scan-${{ github.event.pull_request.head.sha || github.sha }}
+          path: ${{ runner.temp }}/recovery-evidence
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
