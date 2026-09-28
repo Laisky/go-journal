@@ -16,6 +16,7 @@ jobs:
       GOMAXPROCS: '4'
       BASELINE: 8092601fd19d816cb0cef229c04571047b6cf9c5
       CANDIDATE_MODE: isolated
+      CANDIDATE_DESIGN: atomic-cells
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -34,7 +35,7 @@ jobs:
           git rev-parse HEAD HEAD^{tree} > "$E/source.txt"
           git archive --format=tar.gz HEAD > "$E/source.tar.gz"
           git archive --format=tar.gz "$BASELINE" > "$E/baseline-source.tar.gz"
-          printf 'baseline=%s\nmode=%s\n' "$BASELINE" "$CANDIDATE_MODE" > "$E/campaign.txt"
+          printf 'baseline=%s\nmode=%s\ndesign=%s\n' "$BASELINE" "$CANDIDATE_MODE" "$CANDIDATE_DESIGN" > "$E/campaign.txt"
           go version > "$E/toolchain.txt"
           go env -json GOARCH GOOS GOEXPERIMENT CGO_ENABLED GOAMD64 > "$E/compiler-env.json"
           cp go.mod go.sum "$E/"
@@ -75,7 +76,7 @@ jobs:
         run: |
           set -euo pipefail
           E="$RUNNER_TEMP/generation-evidence"
-          for suite in membership generation ack-replay; do
+          for suite in membership generation generation-cold ack-replay; do
             python3 tests/e2eperf/bench_pairs.py --baseline "$E/bench-baseline" --candidate "$E/bench-candidate" --suite "$suite" --pairs 5 --iterations 64 --out "$E/public-$suite" > "$E/public-$suite.json"
             python3 tests/e2eperf/bench_pairs.py --baseline "$E/bench-candidate" --candidate "$E/bench-candidate" --suite "$suite" --pairs 5 --iterations 64 --out "$E/aa-$suite" > "$E/aa-$suite.json"
           done
@@ -113,7 +114,7 @@ jobs:
         run: |
           set -euo pipefail
           E="$RUNNER_TEMP/generation-evidence"
-          for suite in membership generation ack-replay; do
+          for suite in membership generation generation-cold ack-replay; do
             python3 tests/e2eperf/bench_pairs.py --verify "$E/public-$suite" > /dev/null
             python3 tests/e2eperf/bench_pairs.py --verify "$E/aa-$suite" > /dev/null
           done

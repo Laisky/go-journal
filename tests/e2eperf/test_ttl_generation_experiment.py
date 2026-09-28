@@ -15,3 +15,8 @@ class GenerationExperimentTest(unittest.TestCase):
         raw='\n'.join('BenchmarkPublicTTLGeneration/'+name+'-4 64 100 ns/op 0 B/op 0 allocs/op' for name in names)+'\nPASS\n'
         self.assertEqual(len(parse(raw,'generation',64)),4)
         with self.assertRaises(ValueError): parse(raw.replace('64 100','63 100'),'generation',64)
+
+    def test_cold_insertions_cannot_reuse_refresh_work(self):
+        raw='BenchmarkPublicTTLColdInsert/cold-serial-4 64 100 ns/op 1024 B/op 8 allocs/op\nBenchmarkPublicTTLColdInsert/cold-parallel8-4 64 100 ns/op 1024 B/op 8 allocs/op\nPASS\n'
+        self.assertEqual(len(parse(raw,'generation-cold',64)),2)
+        with self.assertRaises(ValueError): parse(raw,'generation',64)

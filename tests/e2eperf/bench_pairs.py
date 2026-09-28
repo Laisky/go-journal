@@ -13,6 +13,7 @@ from report import paired_effect
 from supervised_exec import install_signal_handlers
 
 SUITES = {
+    'generation-cold': ('BenchmarkPublicTTLColdInsert', ['cold-serial','cold-parallel8']),
     'generation': ('BenchmarkPublicTTLGeneration', ['refresh-serial','refresh-parallel8','refresh-parallel32','hot-key32']),
     'membership': ('BenchmarkPublicACKMembership', ['current-hits', 'no-old-misses', 'parallel-hits']),
     'ack-replay': ('BenchmarkPublicACKReplay', ['all-acked', 'sparse-acked', 'gzip-control']),

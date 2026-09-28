@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
-"""Isolate typed/sharded TTL generations; never patch a measured baseline."""
+"""Isolate TTL-generation storage; never patch a measured baseline."""
 import argparse
-import hashlib
 import json
 from pathlib import Path
 

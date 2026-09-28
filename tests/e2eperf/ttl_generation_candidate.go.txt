@@ -1,55 +1,51 @@
 package journal
 
-import "sync"
+import (
+	"sync"
+	"sync/atomic"
+)
 
-// ttlGeneration owns one generation's integer deadlines. Its caller retains
-// Int64SetWithTTL's generation lock; shard locks protect concurrent additions
-// and expiry deletions without allocating interface keys or trie nodes.
-// No map or value escapes a shard lock. A retired generation is never reused.
+// ttlGeneration retains sync.Map's concurrent lookup path, but stores one
+// stable atomic deadline cell per key. Refreshing a current-generation key
+// updates that cell rather than allocating another boxed value/trie entry.
+// The caller holds Int64SetWithTTL's generation lock: current generations are
+// only inserted/refreshed, old generations are only read/deleted. Consequently
+// a successful refresh cannot race deletion of that cell from the same map.
+// Neither a generation nor a published cell is copied, pooled, or reused.
 type ttlGeneration struct {
-	shards [32]ttlDeadlineShard
-}
-
-type ttlDeadlineShard struct {
-	sync.RWMutex
-	deadlines map[int64]int64
-	padding   [32]byte // separate adjacent locks on the measured amd64 target
+	entries sync.Map // int64 -> *atomic.Int64
 }
 
 func newTTLGeneration() *ttlGeneration { return &ttlGeneration{} }
 
-func (g *ttlGeneration) shard(id int64) *ttlDeadlineShard {
-	// Multiplicative hashing spreads sequential and signed IDs across shards.
-	return &g.shards[(uint64(id)*0x9e3779b97f4a7c15)>>59]
-}
-
 func (g *ttlGeneration) Load(id int64) (int64, bool) {
-	s := g.shard(id)
-	s.RLock()
-	deadline, ok := s.deadlines[id]
-	s.RUnlock()
-	return deadline, ok
+	value, ok := g.entries.Load(id)
+	if !ok {
+		return 0, false
+	}
+	return value.(*atomic.Int64).Load(), true
 }
 
 func (g *ttlGeneration) Swap(id, deadline int64) (int64, bool) {
-	s := g.shard(id)
-	s.Lock()
-	if s.deadlines == nil {
-		s.deadlines = make(map[int64]int64)
+	if value, loaded := g.entries.Load(id); loaded {
+		return value.(*atomic.Int64).Swap(deadline), true
 	}
-	old, loaded := s.deadlines[id]
-	s.deadlines[id] = deadline
-	s.Unlock()
-	return old, loaded
+	cell := new(atomic.Int64)
+	cell.Store(deadline) // fully initialized before publication
+	value, loaded := g.entries.LoadOrStore(id, cell)
+	if loaded {
+		// Another insertion won; publish this refresh in the winning cell.
+		return value.(*atomic.Int64).Swap(deadline), true
+	}
+	return 0, false
 }
 
 func (g *ttlGeneration) Store(id, deadline int64) { g.Swap(id, deadline) }
 
 func (g *ttlGeneration) LoadAndDelete(id int64) (int64, bool) {
-	s := g.shard(id)
-	s.Lock()
-	deadline, ok := s.deadlines[id]
-	delete(s.deadlines, id)
-	s.Unlock()
-	return deadline, ok
+	value, loaded := g.entries.LoadAndDelete(id)
+	if !loaded {
+		return 0, false
+	}
+	return value.(*atomic.Int64).Load(), true
 }
