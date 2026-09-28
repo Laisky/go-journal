@@ -20,6 +20,7 @@ import threading
 import time
 
 from supervised_exec import install_signal_handlers
+from monitor import METHOD, observe
 
 
 def require(value, message):
@@ -120,7 +121,7 @@ class Peer:
                     self.send_response(422)
                     self.close_connection = True
                 self.send_header('Content-Type', 'application/json')
-                self.send_header('Content-Length', str(len(response)))
+                self.send_header('Content-Length', str(response))
                 self.end_headers()
                 self.wfile.write(response)
 
@@ -167,27 +168,20 @@ def launch(binary, root, mode, options, peer, *, hold=False, scan_duration=0):
     samples = []
     started = time.monotonic_ns()
     guarded = [sys.executable, str(Path(__file__).with_name('supervised_exec.py')), str(os.getpid()), *args]
+    observation = {}
     with open(out / 'worker.log', 'xb', buffering=0) as log:
-        process = subprocess.Popen(guarded, stdout=log, stderr=subprocess.STDOUT)
+        process = subprocess.Popen(guarded, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=0)
         try:
-            deadline = time.monotonic() + options['timeout']
-            while process.poll() is None:
-                require(time.monotonic() < deadline, 'worker deadline')
-                try:
-                    samples.append(proc_sample(process.pid))
-                except (FileNotFoundError, ProcessLookupError):
-                    pass
-                if hold and (out / 'result.json').exists() and b'CHECKPOINT\n' in (out / 'worker.log').read_bytes():
-                    process.kill()
-                    break
-                time.sleep(.02)
-            code = process.wait(timeout=10)
+            code = observe(process, log, checkpoint=(out / 'result.json') if hold else None,
+                           timeout=options['timeout'], sampler=proc_sample, samples=samples,
+                           metadata=observation, started_ns=started)
         finally:
             if process.poll() is None:
                 process.kill()
                 process.wait()
             save(out / 'process.json', {'returncode': process.returncode, 'held': hold,
-                                      'duration_ns': time.monotonic_ns() - started})
+                                      'duration_ns': time.monotonic_ns() - started,
+                                      'observer': observation})
             save(out / 'resources.json', samples)
     require(code == (-9 if hold else 0), f'{mode} exited {code}; inspect worker.log')
     require((out / 'result.json').exists(), f'{mode} missing results')
@@ -307,6 +301,39 @@ def audit(root):
                 entry.update(records_s=work / elapsed, allocated_bytes_per_record=allocated / work,
                              cpu_us_per_record=cpu * 1e6 / work, p99_ms=percentile(p['latency_ns']) / 1e6)
             summary['phases'][mode + '/' + p['name']] = entry
+    if 'measurement_method' in options:
+        require(options['measurement_method'] == METHOD, 'unknown measurement method')
+        summary['measurement_method'] = METHOD
+        phase_ns = sum(p['End'] - p['Begin'] for mode in modes for p in results[mode]['phases'])
+        process_ns = sum(p['duration_ns'] for p in processes.values())
+        require(0 < phase_ns <= process_ns, 'phase time exceeds observed lifecycle')
+        summary['worker_phase_seconds'] = phase_ns / 1e9
+        summary['outside_phase_seconds'] = (process_ns - phase_ns) / 1e9
+        summary['worker_phase_fraction'] = phase_ns / process_ns
+        backends = set()
+        for mode in results:
+            proc = read(root / mode / 'process.json')
+            require(type(proc.get('duration_ns')) is int and proc['duration_ns'] > 0,
+                    'invalid observed process duration')
+            require(proc.get('held') is (mode in ('seed', 'transfer')), 'wrong observed checkpoint mode')
+            require(type(proc.get('returncode')) is int and
+                    proc['returncode'] == (-9 if mode in ('seed', 'transfer') else 0), 'wrong observed exit')
+            info = proc.get('observer', {})
+            require(info.get('method') == METHOD, 'missing/mixed observer method')
+            require(info.get('backend') in ('pidfd', 'pipe-poll'), 'missing observer backend')
+            backends.add(info['backend'])
+            require(sum(p['End'] - p['Begin'] for p in results[mode]['phases']) <= proc['duration_ns'],
+                    'phase time exceeds worker observation')
+            require(type(info.get('started_ns')) is int and type(info.get('exit_observed_ns')) is int
+                    and 0 < info['started_ns'] <= info['exit_observed_ns'], 'invalid exit observation')
+            require(info['exit_observed_ns'] - info['started_ns'] <= proc['duration_ns'], 'observation outside lifecycle')
+            require(info.get('killed_at_checkpoint') is (mode in ('seed', 'transfer')), 'unsupervised checkpoint')
+            if mode in ('seed', 'transfer'):
+                require(type(info.get('checkpoint_ns')) is int and type(info.get('kill_sent_ns')) is int
+                        and info['started_ns'] <= info['checkpoint_ns'] <= info['kill_sent_ns'] <= info['exit_observed_ns'],
+                        'invalid checkpoint/kill/exit ordering')
+        require(len(backends) == 1, 'mixed observer backends within trial')
+        summary['observer_backends'] = sorted(backends)
     summary['seed_sync_p99_ms'] = percentile([r['Durable'] - r['Begin'] for r in results['seed']['records']]) / 1e6
     summary['latency_ms'] = {}
     for label, mode, start, end in (
@@ -325,6 +352,7 @@ def audit(root):
 def run_trial(binary, root, options):
     root.mkdir(parents=True, exist_ok=False)
     (root / 'wal').mkdir()
+    options = dict(options, measurement_method=METHOD)
     save(root / 'options.json', options)
     cpus, quota = capacity()
     save(root / 'environment.json', {'effective_cpus': cpus, 'cpu_max': quota,
