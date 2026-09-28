@@ -15,7 +15,7 @@ jobs:
       GOTOOLCHAIN: local
       GOMAXPROCS: '4'
       BASELINE: bab91ebc1119a7e6443726fe9c400902ddd6fbbb
-      CANDIDATE_MODE: isolated
+      CANDIDATE_MODE: adopted
       CONTIGUOUS: cb2536d723a4e3e6b4cc665b498c6bc63d1b1aba
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -26,7 +26,7 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           go-version: '1.27.1'
-      - name: Build identical workloads and retain isolated staging patch
+      - name: Build identical workloads and require exact adopted source
         shell: bash
         run: |
           set -euo pipefail

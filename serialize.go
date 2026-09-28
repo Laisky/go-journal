@@ -7,7 +7,6 @@ fp -> gzReader -> reader
 
 import (
 	"bufio"
-	"bytes"
 	"compress/gzip"
 	"encoding/binary"
 	"fmt"
@@ -33,8 +32,9 @@ const (
 	// Readers need bounded lookahead, not the 4 MiB writer/compressor buffer.
 	// Individual records may still exceed this size.
 	readBufferSize = 64 << 10
-	// Bound idle scratch retention, not the maximum accepted record size.
-	maxRetainedRecordBuffer = 128 << 10
+	// The 4 MiB data-writer budget now belongs to private record staging.
+	// Every validated record is still appended/flushed before Write returns.
+	dataWriteBufferSize = 4 << 10
 )
 
 // BaseSerializer base serializer
@@ -49,8 +49,8 @@ type DataEncoder struct {
 	// writeChan chan interface{}
 	writer   *msgp.Writer
 	gzWriter utils.CompressorItf
-	record   bytes.Buffer // scratch owned by the encoder mutex
-	writeErr error        // an incomplete live append must not accept a later record
+	record   recordStage // complete private record, protected by encoder mutex
+	writeErr error       // an incomplete live append must not accept a later record
 }
 
 // DataDecoder data deserializer
@@ -82,6 +82,7 @@ type IdsDecoder struct {
 // NewDataEncoder create new DataEncoder
 func NewDataEncoder(fp *os.File, isCompress bool) (enc *DataEncoder, err error) {
 	enc = &DataEncoder{
+		record: newRecordStage(),
 		BaseSerializer: BaseSerializer{
 			isCompress: isCompress,
 		},
@@ -95,9 +96,9 @@ func NewDataEncoder(fp *os.File, isCompress bool) (enc *DataEncoder, err error) 
 		); err != nil {
 			return nil, err
 		}
-		enc.writer = msgp.NewWriterSize(enc.gzWriter, BufSize)
+		enc.writer = msgp.NewWriterSize(enc.gzWriter, dataWriteBufferSize)
 	} else {
-		enc.writer = msgp.NewWriterSize(fp, BufSize)
+		enc.writer = msgp.NewWriterSize(fp, dataWriteBufferSize)
 	}
 	return enc, nil
 }
@@ -186,19 +187,14 @@ func (enc *DataEncoder) Write(msg *Data) error {
 		return errors.New("data must be non-nil with a nonnegative ID")
 	}
 	enc.record.Reset()
-	defer func() {
-		if enc.record.Cap() > maxRetainedRecordBuffer {
-			enc.record = bytes.Buffer{}
-		} else {
-			enc.record.Reset()
-		}
-	}()
+	// Always discard oversized spill storage, including after encoding errors.
+	defer enc.record.Reset()
 	// Keep EncodeMsg semantics (including Encodable-only values), invoke custom
 	// encoders exactly once, and discard all staged bytes when serialization fails.
 	if err := msgp.Encode(&enc.record, msg); err != nil {
 		return errors.Wrap(err, "encode journal data")
 	}
-	n, err := enc.writer.Write(enc.record.Bytes())
+	n, err := enc.record.appendTo(enc.writer)
 	if err == nil && n != enc.record.Len() {
 		err = io.ErrShortWrite
 	}
@@ -249,7 +245,7 @@ func (enc *DataEncoder) Close() error {
 	if enc.writer == nil {
 		return enc.writeErr
 	}
-	defer func() { enc.writer = nil; enc.record = bytes.Buffer{} }()
+	defer func() { enc.writer = nil; enc.record = recordStage{} }()
 	if enc.writeErr != nil {
 		return enc.writeErr
 	}

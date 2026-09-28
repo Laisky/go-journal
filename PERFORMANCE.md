@@ -49,6 +49,12 @@ the unfavorable evidence is retained.
 
 ## Rejected-payload isolation: measured correctness cost
 
+This section records the historical PR #5 policy and measurements. PR #10's
+[transactional staging redesign](tests/e2eperf/STAGING.md) supersedes the 128 KiB
+scratch-retention policy without removing rejected-payload isolation. Reproduce
+the cap-only experiment below at the pinned historical source, not current HEAD.
+The original results remain unchanged as evidence of the earlier safety cost.
+
 The PR #5 follow-up stages a complete encoded data record before appending it.
 This prevents a rejected serialization from corrupting the live stream, while
 preserving EncodeMsg-only values and single callback invocation. The change is

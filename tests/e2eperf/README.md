@@ -4,8 +4,9 @@ An ordinary consumer of exported Journal APIs with real private data/ACK files,
 an independent fsynced loopback downstream, and repeated process restart.
 PR #10 targets `master`; do not merge or deploy automatically.
 
-Current incremental baseline: `71790780de0b665e1c33b2583c424fcc770944b2`.
-Start with [the consolidated checkpoint](STATUS.md) and [ACK reuse](ACK_REUSE.md).
+Current incremental baseline: `bab91ebc1119a7e6443726fe9c400902ddd6fbbb`.
+Start with [the consolidated checkpoint](STATUS.md) and [transactional staging](STAGING.md).
+The previous [ACK-reader reuse](ACK_REUSE.md) remains historical evidence.
 Earlier [data-reader reuse](SCAN_REUSE.md), [rejected writer buffers](WRITER_RESULTS.md),
 [Sync](SYNC_RESULTS.md), and [ID-scan results](RESULTS.md) keep their own baselines.
 Do not attribute earlier improvements to a later patch. The PR body identifies
@@ -63,7 +64,7 @@ compiler, dependencies, flags and case definitions. Historical workers are not
 interchangeable. An old artifact must be audited with its matching trusted driver.
 
 ```sh
-BASE=71790780de0b665e1c33b2583c424fcc770944b2
+BASE=bab91ebc1119a7e6443726fe9c400902ddd6fbbb
 git worktree add --detach "$E/baseline-src" "$BASE"
 cmp go.mod "$E/baseline-src/go.mod"
 cmp go.sum "$E/baseline-src/go.sum"
@@ -71,7 +72,7 @@ cp tests/e2eperf/*.go "$E/baseline-src/tests/e2eperf/"
 (cd "$E/baseline-src" && go build -mod=readonly -trimpath \
   -o "$E/worker-baseline" ./tests/e2eperf)
 python3 tests/e2eperf/compare.py --baseline "$E/worker-baseline" \
-  --candidate "$E/worker" --cases tests/e2eperf/ack_cases.json \
+  --candidate "$E/worker" --cases tests/e2eperf/staging_cases.json \
   --pairs 5 --out "$E/paired"
 python3 tests/e2eperf/report.py "$E/paired/report.json"
 ```
@@ -114,7 +115,7 @@ loads surviving an interrupted owner; guards require Linux and non-setuid progra
 ```sh
 python3 tests/e2eperf/observe.py --out "$E/host" -- \
   python3 tests/e2eperf/compare.py --baseline "$E/worker-baseline" \
-    --candidate "$E/worker" --cases tests/e2eperf/ack_cases.json \
+    --candidate "$E/worker" --cases tests/e2eperf/staging_cases.json \
     --pairs 5 --out "$E/observed-pairs"
 ```
 
@@ -202,3 +203,27 @@ result serialization and shutdown/observation. It is **not all removable overhea
 nor an estimate of fsync cost. Worker-internal p99 and profiling code are unchanged.
 
 See [observer implementation, measurements and validation limits](OBSERVER_RESULTS.md).
+
+## Current write-path experiment
+
+The current data encoder reassigns its original 4 MiB output-buffer budget to
+complete private record staging, retaining only excess bytes in temporary spill
+storage. Data output buffering is 4 KiB; ACK and compressor buffers are unchanged.
+Both prefix and overflow are validated before live append. A failed live append
+still poisons the encoder. This is not atomic filesystem writing or a weaker
+Sync/ACK policy. [STAGING.md](STAGING.md) separates the two measured candidates,
+accepted implementation, constructor/overflow controls and timing limitations.
+
+```sh
+python3 tests/e2eperf/run.py --binary "$E/worker" --out "$E/staging-cpu" \
+  --count 256 --payload 262144 --writers 4 --ack-percent 0 \
+  --scans 0 --diagnostics cpu
+go tool pprof -top -sample_index=alloc_space \
+  -base="$E/staging-cpu/seed/alloc-before.pprof" \
+  "$E/worker" "$E/staging-cpu/seed/alloc.pprof"
+python3 tests/e2eperf/staging_negative.py --out "$E/staging-negative"
+```
+
+The bypass-staging mutation must fail a real rejected-payload/live-file assertion;
+compiler errors or timeouts are not accepted. The overflow campaign reconstructs
+the pinned first prototype only as a reference, never by weakening production.
