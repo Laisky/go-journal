@@ -49,3 +49,23 @@ Old RSS/empty-replay concerns are not asserted solved by a new local gain.
 Representative entropy, offered-rate saturation and long soaks remain distinct
 scope. No universal speedup or global-optimality claim. Read exact-head artifacts
 and recompute identity/audits/assessments before the final PR status update.
+
+## Resumed follow-up: complete buffered ACK words
+
+The c013e4b8 generation campaign was recovered and its 2,958 manifest entries,
+100 lifecycle audits / 195,840 deliveries, eight public reports and source tree
+were independently rechecked. Source tree a1d1c5c148917981941988097dd70b9c75225af5.
+No unrelated remote branches or earlier reports were removed. The PR description
+will record final exact-head acceptance, not infer it from recovered results.
+
+The next isolated candidate targets per-word ReadFull dispatch/copy in ACK set
+and bitmap imports. Only complete words already Buffered can use Peek/Discard;
+partial input and pending I/O/checksum errors retain ReadFull. Each word is
+consumed before invoking user code. Independent per-read state comparisons,
+consumer-panic continuation, fuzzing and a real omitted-discard mutant protect
+that boundary. Source, fixtures and timing policy stay frozen across paired runs.
+No production adoption is claimed before the native experiment is read.
+
+The completed typed-generation campaign is manual-only, pinned to c013e4b8;
+its exact source and adverse results remain reproducible. All current generation
+behavior tests still run in the active full/race suites.
