@@ -4,9 +4,9 @@ import (
 	"github.com/tinylib/msgp/msgp"
 )
 
-// Inspect only bytes already buffered by the ordinary reader. This is an
+// Replay lookahead inspects only this many already-buffered bytes. This is an
 // optimization bound, not a record-size limit. Larger/cross-buffer records and
-// less common encodings retain the original DecodeMsg path.
+// less common encodings retain the original DecodeMsg path during replay.
 const maxSelectiveRecordBytes = 128 << 10
 
 // readWithAcknowledgement avoids constructing the payload of an acknowledged
@@ -172,4 +172,33 @@ func scanReplayValue(b []byte, depth int) ([]byte, bool) {
 		}
 		return b[size:], true
 	}
+}
+
+// readRecordID validates a complete canonical buffered record without building
+// its payload. Unlike replay, the maximum-ID scan has always decoded into a NEW
+// Data for each record: missing fields do not inherit predecessor state. The
+// fallback deliberately retains that behavior and all generated-decoder errors.
+// No ACK lookup, cleanup or read-ahead beyond the ordinary buffer occurs here.
+func (dec *DataDecoder) readRecordID() (int64, error) {
+	r := dec.reader.R
+	if r.Buffered() == 0 {
+		if _, err := r.Peek(1); err != nil {
+			return 0, err
+		}
+	}
+	// Unlike replay lookahead, this stateless scan needs no successor. Inspect
+	// the existing buffer, not an artificial 128 KiB prefix that forced fully
+	// buffered large payloads through allocating DecodeMsg. Peek adds no I/O.
+	n := r.Buffered()
+	b, err := r.Peek(n)
+	if err != nil {
+		return 0, err
+	}
+	if id, size, ok := inspectReplayRecord(b); ok {
+		_, err = r.Skip(size)
+		return id, err
+	}
+	var data Data
+	err = dec.Read(&data)
+	return data.ID, err
 }

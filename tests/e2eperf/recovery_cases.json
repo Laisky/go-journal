@@ -1,0 +1,6 @@
+[
+  {"name":"plain-many-segments","count":1024,"payload":256,"writers":1,"ack_percent":50,"scans":8,"rotate_every":4},
+  {"name":"plain-ack-dense","count":8192,"payload":0,"writers":8,"ack_percent":100,"scans":32},
+  {"name":"gzip-segment-control","count":256,"payload":4096,"writers":4,"ack_percent":75,"scans":4,"rotate_every":16,"gzip":true},
+  {"name":"plain-small-control","count":512,"payload":256,"writers":1,"ack_percent":50,"scans":4}
+]

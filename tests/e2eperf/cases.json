@@ -1,0 +1,6 @@
+[
+  {"name":"plain-16k-sparse","count":4096,"payload":16384,"writers":4,"ack_percent":50,"scans":16},
+  {"name":"gzip-4k-sparse","count":1024,"payload":4096,"writers":4,"ack_percent":75,"scans":8,"gzip":true},
+  {"name":"plain-small-pending","count":512,"payload":256,"writers":8,"ack_percent":0,"scans":8},
+  {"name":"plain-oversize","count":32,"payload":262144,"writers":4,"ack_percent":50,"scans":4}
+]

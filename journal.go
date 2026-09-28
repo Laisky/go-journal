@@ -44,6 +44,7 @@ type Journal struct {
 	dataEnc       *DataEncoder
 	idsEnc        *IdsEncoder
 	lastRotateAt  time.Time
+	syncGroup     syncBarrierGroup
 }
 
 // NewJournal create new Journal
@@ -522,9 +523,20 @@ func (j *Journal) LoadLegacyBuf(data *Data) (err error) {
 
 // Sync makes completed writes durable. It does not wait for work queued in
 // another goroutine: replay callers must WriteData before requesting cleanup.
+// Overlapping callers may share a barrier; sequential calls never reuse a
+// completed result. Each shared barrier still synchronizes both files and dir.
 func (j *Journal) Sync() error {
-	j.Lock()
-	defer j.Unlock()
+	select {
+	case <-j.stopChan:
+		return os.ErrClosed
+	default:
+	}
+	return j.syncGroup.run(&j.RWMutex, j.syncBarrierLocked)
+}
+
+// syncBarrierLocked runs with exclusive writer ownership. Overlapping Sync
+// callers can share this result only until ownership is released.
+func (j *Journal) syncBarrierLocked() error {
 	select {
 	case <-j.stopChan:
 		return os.ErrClosed

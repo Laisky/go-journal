@@ -1,0 +1,148 @@
+name: Benchmark regression gate
+on:
+  pull_request:
+  push:
+    branches: [master]
+  merge_group:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: benchmark-regression-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  benchmark-regression:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      GOTOOLCHAIN: local
+      GOMAXPROCS: '4'
+      PR_BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version: '1.27.1'
+      - name: Build one frozen public-API harness against every reference
+        shell: bash
+        run: |
+          set -euo pipefail
+          E="$RUNNER_TEMP/benchmark-evidence"
+          mkdir -p "$E"
+          PIN=$(python3 -c 'import json; print(json.load(open("tests/benchgate/policy.json"))["reference"])')
+          printf 'PIN=%s\n' "$PIN" >> "$GITHUB_ENV"
+          git rev-parse HEAD HEAD^{tree} > "$E/source.txt"
+          git archive --format=tar.gz HEAD > "$E/source.tar.gz"
+          go version > "$E/go-version.txt"
+          go env -json > "$E/go-env.json"
+          uname -a > "$E/host.txt"
+          cat /proc/mounts > "$E/mounts.txt"
+          cat /proc/cpuinfo > "$E/cpuinfo.txt"
+          go mod download
+          go mod verify > "$E/module-verify.txt"
+          test -z "$(gofmt -l tests/benchgate/*.go)"
+          python3 -m unittest discover -s tests/benchgate -p 'test_*.py' -v > "$E/gate-tests.txt" 2>&1
+          go build -mod=readonly -trimpath -o "$E/candidate" ./tests/benchgate
+          go build -mod=readonly -trimpath -o "$E/worker-candidate" ./tests/e2eperf
+          for side in reference original; do
+            ref="$PIN"
+            if [ "$side" = original ]; then ref=fc156a60fafc21dd36ad534e5b8f7a971beccec8; fi
+            T="$RUNNER_TEMP/benchmark-$side"
+            git worktree add --detach "$T" "$ref"
+            git archive --format=tar.gz "$ref" > "$E/$side-source.tar.gz"
+            mkdir -p "$T/tests/benchgate" "$T/tests/e2eperf"
+            cp tests/benchgate/*.go "$T/tests/benchgate/"
+            cp tests/e2eperf/*.go "$T/tests/e2eperf/"
+            (cd "$T" && go build -mod=readonly -trimpath -o "$E/$side" ./tests/benchgate && go build -mod=readonly -trimpath -o "$E/worker-$side" ./tests/e2eperf)
+          done
+          if [[ "$PR_BASE" =~ ^[0-9a-f]{40}$ ]] && git cat-file -e "$PR_BASE^{commit}" && git merge-base --is-ancestor "$PIN" "$PR_BASE" && [ "$PR_BASE" != "$PIN" ]; then
+            T="$RUNNER_TEMP/benchmark-rolling"
+            git worktree add --detach "$T" "$PR_BASE"
+            mkdir -p "$T/tests/benchgate"
+            cp tests/benchgate/*.go "$T/tests/benchgate/"
+            (cd "$T" && go build -mod=readonly -trimpath -o "$E/rolling" ./tests/benchgate)
+            printf '%s\n' "$PR_BASE" > "$E/rolling-ref.txt"
+          fi
+          for bin in candidate reference original; do go version -m "$E/$bin" > "$E/$bin-build.txt"; done
+          sha256sum tests/benchgate/*.go tests/benchgate/*.py tests/benchgate/policy.json > "$E/harness-sha256.txt"
+      - name: Enforce fixed allocation budgets and paired CPU regression limits
+        shell: bash
+        run: |
+          set -euo pipefail
+          E="$RUNNER_TEMP/benchmark-evidence"
+          python3 tests/benchgate/gate.py --reference "$E/reference" --candidate "$E/candidate" --out "$E/pinned"
+          if [ -f "$E/rolling" ]; then
+            python3 tests/benchgate/gate.py --reference "$E/rolling" --candidate "$E/candidate" --out "$E/rolling-pairs"
+          fi
+      - name: Prove real extra-copy and unnecessary-clock regressions are blocked
+        shell: bash
+        run: |
+          set -euo pipefail
+          E="$RUNNER_TEMP/benchmark-evidence"
+          for probe in copy clock; do
+            T="$RUNNER_TEMP/benchmark-negative-$probe"
+            git worktree add --detach "$T" "$PIN"
+            mkdir -p "$T/tests/benchgate"
+            cp tests/benchgate/*.go "$T/tests/benchgate/"
+            python3 - "$T" "$probe" <<'PY'
+          import pathlib, sys
+          root=pathlib.Path(sys.argv[1]); kind=sys.argv[2]
+          path=root/('record_stage.go' if kind=='copy' else 'set.go')
+          text=path.read_text()
+          if kind=='copy':
+              old='n, err := w.Write(part)'
+              assert text.count(old)==1
+              text=text.replace(old,'n, err := w.Write(bytes.Clone(part))')
+          else:
+              old='\tvar vi int64\n'
+              assert text.count(old)==1 and text.count('\t\tt := time.Now().UnixNano()\n')==1
+              text=text.replace(old,'\tt := time.Now().UnixNano()\n'+old).replace('\t\tt := time.Now().UnixNano()\n','')
+          path.write_text(text)
+          PY
+            (cd "$T" && git diff > "$E/$probe.patch" && go build -mod=readonly -trimpath -o "$E/negative-$probe" ./tests/benchgate)
+            case=staging-1m; kind=absolute-allocation
+            if [ "$probe" = clock ]; then case=ttl-hits; kind=cpu-regression; fi
+            set +e
+            python3 tests/benchgate/gate.py --reference "$E/reference" --candidate "$E/negative-$probe" --case "$case" --out "$E/negative-$probe-results" > "$E/$probe-gate.log" 2>&1
+            rc=$?
+            set -e
+            test "$rc" = 1
+            python3 - "$E/negative-$probe-results/report.json" "$kind" <<'PY'
+          import json, sys
+          a=json.load(open(sys.argv[1]))['assessment']
+          assert a['passed'] is False and any(i['kind']==sys.argv[2] for i in a['issues']), a
+          PY
+          done
+      - name: Cumulative original-baseline durable lifecycles and re-audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          E="$RUNNER_TEMP/benchmark-evidence"
+          python3 tests/e2eperf/compare.py --baseline "$E/worker-original" --candidate "$E/worker-candidate" --cases tests/benchgate/cumulative_cases.json --pairs 5 --out "$E/cumulative" > "$E/cumulative-summary.json"
+      - name: Preserve evidence and exit outcomes, including failures
+        if: always()
+        shell: bash
+        run: |
+          E="$RUNNER_TEMP/benchmark-evidence"
+          mkdir -p "$E"
+          cd "$E"
+          find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
+      - name: Verify final manifests, raw samples and cumulative assessments
+        shell: bash
+        run: |
+          set -euo pipefail
+          E="$RUNNER_TEMP/benchmark-evidence"
+          python3 tests/benchgate/gate.py --verify "$E/pinned" > "$RUNNER_TEMP/pinned-verification.json"
+          python3 tests/e2eperf/verify.py --root "$E" --campaign cumulative=worker-original,worker-candidate > "$RUNNER_TEMP/cumulative-verification.json"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: benchmark-regression-${{ github.event.pull_request.head.sha || github.sha }}
+          path: ${{ runner.temp }}/benchmark-evidence
+          include-hidden-files: true
+          retention-days: 30
+          if-no-files-found: error

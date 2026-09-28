@@ -122,7 +122,7 @@ type Int64SetWithTTL struct {
 
 	ttl      time.Duration
 	ttlNanos int64
-	og, ng   *sync.Map
+	og, ng   *ttlGeneration
 	ogN, ngN int64 // {msgid: time}
 }
 
@@ -143,7 +143,7 @@ func NewInt64SetWithTTL(ctx context.Context, ttl time.Duration) *Int64SetWithTTL
 		stopChan: make(chan struct{}),
 		ttl:      ttl,
 		ttlNanos: int64(ttl),
-		ng:       &sync.Map{},
+		ng:       newTTLGeneration(),
 	}
 	Logger.Debug("NewInt64SetWithTTL",
 		zap.Duration("ttl", s.ttl),
@@ -180,18 +180,17 @@ func (s *Int64SetWithTTL) AddInt64(id int64) {
 func (s *Int64SetWithTTL) CheckAndRemove(id int64) (ok bool) {
 	s.RLock()
 	defer s.RUnlock()
-	var (
-		t  = time.Now().UnixNano()
-		vi interface{}
-	)
+	var vi int64
 	if _, ok = s.ng.Load(id); ok {
 		// Logger.Debug("found in ng")
 		return true
 	}
 
 	if s.og != nil {
+		// Current-generation hits and misses without an old generation need no clock.
+		t := time.Now().UnixNano()
 		if vi, ok = s.og.Load(id); ok {
-			if vi.(int64) > t {
+			if vi > t {
 				Logger.Debug("found in og")
 				return true
 			}
@@ -234,7 +233,7 @@ func (s *Int64SetWithTTL) StartRotate(ctx context.Context) {
 			s.Lock()
 			s.ogN, s.ngN = s.ngN, 0
 			s.og = s.ng
-			s.ng = &sync.Map{}
+			s.ng = newTTLGeneration()
 			s.Unlock()
 		}
 	}

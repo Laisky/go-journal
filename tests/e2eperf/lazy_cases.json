@@ -1,0 +1,6 @@
+[
+  {"name":"plain-w1-pending","count":2048,"payload":1024,"writers":1,"ack_percent":0,"scans":0},
+  {"name":"gzip-w1-sparse","count":1024,"payload":1024,"writers":1,"ack_percent":50,"scans":0,"gzip":true},
+  {"name":"plain-small-pending","count":512,"payload":256,"writers":8,"ack_percent":0,"scans":8},
+  {"name":"plain-w16-pending","count":2048,"payload":1024,"writers":16,"ack_percent":0,"scans":0}
+]

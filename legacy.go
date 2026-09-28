@@ -211,13 +211,14 @@ func (l *LegacyLoader) LoadMaxId() (maxId int64, err error) {
 	defer l.RUnlock()
 	l.logger.Debug("LoadMaxId...")
 	startTs := utils.Clock.GetUTCNow()
+	var ackBuffers scanIDBuffers
 	for _, name := range l.idsFNames {
 		var id int64
-		if err := readIDsFile(name, func(dec *IdsDecoder) error {
+		if err := readIDsFileWithBuffers(name, func(dec *IdsDecoder) error {
 			var err error
 			id, err = dec.LoadMaxId()
 			return err
-		}); err != nil {
+		}, &ackBuffers); err != nil {
 			return 0, err
 		}
 		if id > maxId {
@@ -226,8 +227,9 @@ func (l *LegacyLoader) LoadMaxId() (maxId int64, err error) {
 	}
 
 	newest := l.newestDataName()
+	var buffers scanReaderBuffers
 	for _, fname := range l.dataFNames {
-		id, dataErr := maxDataID(fname, fname == newest)
+		id, dataErr := maxDataIDWithBuffers(fname, fname == newest, &buffers)
 		if dataErr != nil {
 			return 0, dataErr
 		}
@@ -250,8 +252,9 @@ func (l *LegacyLoader) LoadAllids(ids Int64SetItf) error {
 }
 
 func (l *LegacyLoader) loadAllIDs(ids Int64SetItf) error {
+	var ackBuffers scanIDBuffers
 	for _, name := range l.idsFNames {
-		if err := readIDsFile(name, func(dec *IdsDecoder) error { return dec.ReadAllToInt64Set(ids) }); err != nil {
+		if err := readIDsFileWithBuffers(name, func(dec *IdsDecoder) error { return dec.ReadAllToInt64Set(ids) }, &ackBuffers); err != nil {
 			return err
 		}
 	}
@@ -261,30 +264,7 @@ func (l *LegacyLoader) loadAllIDs(ids Int64SetItf) error {
 // Scope each descriptor to one file rather than deferring all closes until the
 // complete snapshot has been scanned. Unused zero-byte gzip files are valid.
 func readIDsFile(name string, consume func(*IdsDecoder) error) (err error) {
-	fp, err := os.Open(name)
-	if err != nil {
-		return errors.Wrap(err, "open acknowledgement file")
-	}
-	defer func() {
-		if closeErr := fp.Close(); err == nil && closeErr != nil {
-			err = closeErr
-		}
-	}()
-	info, err := fp.Stat()
-	if err != nil {
-		return err
-	}
-	if info.Size() == 0 {
-		return nil
-	}
-	dec, err := NewIdsDecoder(fp, isFileGZ(name))
-	if err != nil {
-		return errors.Wrapf(err, "decode acknowledgement header %s", name)
-	}
-	if err := consume(dec); err != nil {
-		return errors.Wrapf(err, "decode acknowledgement records %s", name)
-	}
-	return nil
+	return readIDsFileWithBuffers(name, consume, nil)
 }
 
 // Clean remove old legacy files
@@ -307,12 +287,13 @@ func (l *LegacyLoader) Clean() error {
 		// Decode before removing anything: damaged ACKs are not cleanup permission.
 		var frontierName string
 		var frontier int64 = -1
+		var ackBuffers scanIDBuffers
 		for _, name := range l.idsFNames {
 			var maxID int64
-			if err := readIDsFile(name, func(dec *IdsDecoder) (err error) {
+			if err := readIDsFileWithBuffers(name, func(dec *IdsDecoder) (err error) {
 				maxID, err = dec.LoadMaxId()
 				return err
-			}); err != nil {
+			}, &ackBuffers); err != nil {
 				return err
 			}
 			if maxID > frontier {
@@ -367,6 +348,10 @@ func (l *LegacyLoader) Clean() error {
 // maxDataID reads a sealed segment without consuming it or changing ACK state.
 // An unreadable record is not permission to allocate potentially colliding IDs.
 func maxDataID(name string, newest bool) (int64, error) {
+	return maxDataIDWithBuffers(name, newest, nil)
+}
+
+func maxDataIDWithBuffers(name string, newest bool, buffers *scanReaderBuffers) (int64, error) {
 	fp, err := os.Open(name)
 	if err != nil {
 		return 0, errors.Wrap(err, "open recovery data")
@@ -379,14 +364,15 @@ func maxDataID(name string, newest bool) (int64, error) {
 	if stat.Size() == 0 {
 		return 0, nil
 	}
-	decoder, err := NewDataDecoder(fp, isFileGZ(name))
+	decoder, err := buffers.decoder(fp, stat, isFileGZ(name))
 	if err != nil {
 		return 0, errors.Wrap(err, "decode recovery data header")
 	}
+	defer buffers.release(decoder)
 	var high int64
 	for {
-		d := &Data{}
-		if err := decoder.Read(d); err != nil {
+		id, readErr := decoder.readRecordID()
+		if err := readErr; err != nil {
 			if err == io.EOF {
 				return high, nil
 			}
@@ -399,8 +385,8 @@ func maxDataID(name string, newest bool) (int64, error) {
 			}
 			return 0, errors.Wrapf(err, "read recovery data %s", name)
 		}
-		if d.ID > high {
-			high = d.ID
+		if id > high {
+			high = id
 		}
 	}
 }
