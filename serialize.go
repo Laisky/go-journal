@@ -389,6 +389,17 @@ func (dec *IdsDecoder) LoadMaxId() (maxId int64, err error) {
 		if id > maxId {
 			maxId = id
 		}
+		// Fold complete buffered deltas without per-word ReadFull copies.
+		// The next scalar read preserves partial words and pending I/O errors.
+		if dec.reader.Buffered() >= 8 {
+			buffered, err := bufferedACKMaximum(dec.reader, dec.baseID)
+			if err != nil {
+				return 0, errors.Wrap(err, "read ids")
+			}
+			if buffered > maxId {
+				maxId = buffered
+			}
+		}
 	}
 
 	return maxId, nil

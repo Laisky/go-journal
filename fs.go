@@ -5,7 +5,6 @@ package journal
 
 import (
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path"
 	"path/filepath"
@@ -84,12 +83,14 @@ func PrepareNewBufFile(dirPath string, oldFsStat *bufFileStat, isScan, isGz bool
 	var (
 		latestDataFName, latestIDsFName string
 		fname, absFname                 string
-		fs                              []os.FileInfo
+		fs                              []os.DirEntry
 	)
+	// Enumerate sorted names without eager FileInfo/Lstat work. The explicit
+	// os.Stat below still validates EVERY entry, including unknown symlinks.
 	// scan existing buf files.
 	// update legacyLoader or first run.
 	if isScan || oldFsStat == nil {
-		if fs, err = ioutil.ReadDir(dirPath); err != nil {
+		if fs, err = os.ReadDir(dirPath); err != nil {
 			return nil, errors.Wrapf(err, "read files in dir `%s`", dirPath)
 		}
 

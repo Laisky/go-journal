@@ -1,54 +1,43 @@
 # Performance acceptance checkpoint
 
 Owner: [PR #10](https://github.com/Laisky/go-journal/pull/10), branch
-`perf/journal-e2e-20260927`, target `master`. Continue this branch. No automatic
-merge/deployment, force-push, replacement PR or deletion of unrelated branches.
+`perf/journal-e2e-20260927`, target `master`. Continue the existing branch; no
+force-push, replacement PR, automatic merge/deployment or unrelated branch deletion.
 
-## Consolidated implementation
+## Preserved implementation and rejected experiments
 
-Retain ID-only scanning, overlapping Sync barriers with lazy notification,
-operation-local data/ACK readers, parent-death-safe supervision and events-v2
-observation. The new incremental baseline is accepted head
-`bab91ebc1119a7e6443726fe9c400902ddd6fbbb`; its previous gains are not credited again.
-Earlier isolated 1 MiB read-buffer and simple 4 KiB/256 B writer reductions remain
-rejected. Their reports and unfavorable observations are preserved.
+Retain ID-only scans, overlapping Sync with lazy notification, operation-local
+data/ACK readers, transactional prefix/overflow staging, parent-death supervision
+and events-v2 observation. The current incremental baseline is `b4792253d0260b0cae0c5731c5dad4d755646c56`.
+The 1 MiB reader, simple 4 KiB/256 B writer reductions and 4 KiB framing-headroom
+experiments remain rejected. Their reports and unfavorable observations remain
+in [STAGING.md](STAGING.md), [HEADROOM.md](HEADROOM.md), [WRITER_RESULTS.md](WRITER_RESULTS.md),
+[ACK_REUSE.md](ACK_REUSE.md), [SCAN_REUSE.md](SCAN_REUSE.md), [SYNC_RESULTS.md](SYNC_RESULTS.md)
+and [OBSERVER_RESULTS.md](OBSERVER_RESULTS.md). Their gains are not counted again.
 
 ## Current production iteration
 
-[Transactional record staging](STAGING.md) reassigns the existing 4 MiB data-output
-buffer budget to an encoder-private prefix, with temporary overflow-only storage
-and a 4 KiB output writer. The entire encoding must succeed before either part
-reaches live storage. Partial append failures remain sticky; Sync/ACK ordering,
-reader/ACK/compressor buffers, wire format and dependencies remain unchanged.
+[RECOVERY_SCAN.md](RECOVERY_SCAN.md) separates buffered ACK maximum folding from
+single-pass directory metadata enumeration. The initial isolated source `e5744609`
+passed native differential/full/race/fuzz and 80 audited lifecycles. Public-API
+measurements establish less word-copy/dispatch work and fewer metadata syscalls;
+the complete fixed experimental integration is now enabled in checked-in source.
+No extra read-ahead, cache, weaker error handling, skipped Stat or persistence change.
 
-The contiguous prototype was measured first (`cb2536d7`, 130 trials), then the
-segmented correction (`bd2df18f`, 150 trials). Both artifacts were verified.
-The exact tested segmented serializer patch is now adopted; the native workflow
-requires an empty candidate.patch and repeats the same frozen cases, the pinned
-contiguous reference, correctness/mutation suites and before/after A/A controls.
-The PR body is the final exact-head CI/artifact record, not a prediction based on
-an isolated prototype. See STAGING.md for every baseline and quantitative result.
+The recovery workflow now requires an empty candidate.patch, compares actual
+checked-in binaries, repeats the same frozen benchmarks/lifecycle controls, and
+checks two real failure mutants. The PR body identifies the latest verified head
+and artifacts; do not replace exact-head acceptance with the prototype's result.
 
-## Completed framing-slack follow-up
+## Qualification, regressions and remaining work
 
-The 4 KiB arena extension remains **unadopted**. Its pinned experiment is retained
-in [HEADROOM.md](HEADROOM.md): 80 audited lifecycles, lower boundary write counts,
-but no qualified end-to-end benefit, approximately 8 KiB more constructor
-allocation and an unfavorable control CPU observation. The workflow is now
-manual-only and checks out its original source. No timing sample was replaced.
+Whole-lifecycle timing qualification failed in the isolated campaign. Four main
+lifecycle comparisons remain inconclusive; two small-phase regression flags are
+retained in RECOVERY_SCAN.md. Public warm-cache scan/preparation gains are not
+qualified end-to-end latency, delivery throughput or universal RSS savings.
 
-The accepted production integration is `1db7ba2d`; source `9855736` revalidated
-that unchanged Go implementation with 150 primary lifecycles. Their exact source,
-artifacts, unfavorable results and verification are linked in the two reports.
-The PR body identifies the newest verified head after this consolidation; do not
-substitute a historical prototype's results for its exact-head validation.
-
-## Acceptance limits and remaining work
-
-Allocation/GC gains are not uniform RSS or latency gains. Do not relax the A/A
-qualification policy, hide adverse samples, replace failed trials or weaken
-serialization rejection/Sync to increase throughput. Final verification must
-recompute all audits, source identity, reports and qualification from exact-head
-evidence. The earlier empty-replay CPU/RSS findings are not claimed solved by
-this write-path change. Representative offered-rate/entropy/soak workloads remain
-separate scope; no global-optimality or sustainable production-capacity claim.
+Preserve every observation, match source and compiler/workload identity, audit
+raw results, and keep profiler runs separate. Do not relax A/A criteria or rerun
+unfavorable trials to obtain a passing label. Prior empty-replay CPU/RSS concerns
+are not asserted solved. Offered-rate/entropy/soak workloads remain distinct scope;
+no global-optimality or production-capacity claim follows from these fixtures.

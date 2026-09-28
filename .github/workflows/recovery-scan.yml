@@ -15,7 +15,7 @@ jobs:
       GOTOOLCHAIN: local
       GOMAXPROCS: '4'
       BASELINE: b4792253d0260b0cae0c5731c5dad4d755646c56
-      CANDIDATE_MODE: isolated
+      CANDIDATE_MODE: adopted
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -72,14 +72,15 @@ jobs:
           go test -mod=readonly -race -shuffle=on -count=3 -json ./... > "$E/race.jsonl"
           go test -mod=readonly -run '^$' -fuzz '^FuzzACKMaximumMatchesScalar$' -fuzztime=10s > "$E/ack-fuzz.txt"
           go test -mod=readonly -run '^$' -fuzz '^FuzzIDScanMatchesGenerated$' -fuzztime=8s > "$E/id-fuzz.txt"
+          python3 tests/e2eperf/recovery_negative.py --out "$E/recovery-negative" > "$E/recovery-negative.json"
           git diff --exit-code -- go.mod go.sum
-      - name: Isolate ACK decoding and directory preparation public API effects
+      - name: Exact-head ACK and directory public API comparisons
         shell: bash
         run: |
           set -euo pipefail
           E="$RUNNER_TEMP/recovery-evidence"
-          python3 tests/e2eperf/bench_pairs.py --baseline "$E/bench-baseline" --candidate "$E/bench-batch" --suite ack --pairs 5 --iterations 64 --out "$E/ack-public" > "$E/ack-public.json"
-          python3 tests/e2eperf/bench_pairs.py --baseline "$E/bench-baseline" --candidate "$E/bench-directory" --suite directory --pairs 5 --iterations 32 --out "$E/directory-public" > "$E/directory-public.json"
+          python3 tests/e2eperf/bench_pairs.py --baseline "$E/bench-baseline" --candidate "$E/bench-candidate" --suite ack --pairs 5 --iterations 64 --out "$E/ack-public" > "$E/ack-public.json"
+          python3 tests/e2eperf/bench_pairs.py --baseline "$E/bench-baseline" --candidate "$E/bench-candidate" --suite directory --pairs 5 --iterations 32 --out "$E/directory-public" > "$E/directory-public.json"
           python3 tests/e2eperf/bench_pairs.py --baseline "$E/bench-candidate" --candidate "$E/bench-candidate" --suite ack --pairs 5 --iterations 64 --out "$E/ack-aa" > "$E/ack-aa.json"
           python3 tests/e2eperf/bench_pairs.py --baseline "$E/bench-candidate" --candidate "$E/bench-candidate" --suite directory --pairs 5 --iterations 32 --out "$E/directory-aa" > "$E/directory-aa.json"
       - name: Full durable lifecycle comparisons and before after controls
@@ -97,11 +98,11 @@ jobs:
         run: |
           set -euo pipefail
           E="$RUNNER_TEMP/recovery-evidence"
-          for side in baseline batch; do
+          for side in baseline candidate; do
             "$E/bench-$side" -test.run='^$' -test.bench='^BenchmarkPublicACKFrontier/plain-128k$' -test.benchtime=2048x -test.cpuprofile="$E/$side-ack.cpu" > "$E/$side-profile.log"
             go tool pprof -top -nodecount=25 -tagfocus=phase=public-ack-scan "$E/bench-$side" "$E/$side-ack.cpu" > "$E/$side-ack-cpu.txt"
           done
-          for side in baseline directory; do
+          for side in baseline candidate; do
             if command -v strace >/dev/null; then
               strace -f -c -e trace=newfstatat,statx -o "$E/$side-stat-counts.txt" "$E/bench-$side" -test.run='^$' -test.bench='^BenchmarkPublicDirectorySnapshot/4096$' -test.benchtime=32x > "$E/$side-stat-work.log"
             else
