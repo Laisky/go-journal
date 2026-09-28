@@ -47,6 +47,13 @@ def apply(root, template):
         p.write_text(text)
 
 
+
+def omit_refresh(text):
+    old='return value.(*atomic.Int64).Swap(deadline), true'
+    if text.count(old)!=1: raise ValueError('refresh mutation anchor changed')
+    return text.replace(old,'return value.(*atomic.Int64).Load(), true',1)
+
+
 def main():
     install_signal_handlers()
     p=argparse.ArgumentParser(description=__doc__)
@@ -60,8 +67,15 @@ def main():
         if len(matches)!=1 or text.count(matches[0])!=1: raise ValueError('expiry anchor changed')
         anchor=matches[0];test='TestTTLGenerationPublicExpiry';assertion='expired generation accepted'
         mutated=text.replace(anchor,anchor.replace(' > t',' > t || true'),1)
-        print(json.dumps([run_case(root,a.negative,'positive',test,assertion),
-              run_case(root,a.negative,'expiry-bypass',test,assertion,(path,mutated))],indent=2))
+        outcomes=[run_case(root,a.negative,'positive',test,assertion),
+                  run_case(root,a.negative,'expiry-bypass',test,assertion,(path,mutated))]
+        helper=root/'ttl_generation.go'
+        test='TestTTLGenerationPublicRefreshDeadline'
+        assertion='refreshed deadline lost after rotation'
+        outcomes.extend([run_case(root,a.negative,'refresh-positive',test,assertion),
+            run_case(root,a.negative,'refresh-omitted',test,assertion,
+                     (helper,omit_refresh(helper.read_text())))])
+        print(json.dumps(outcomes,indent=2))
     else:
         apply(root,Path(__file__).with_name('ttl_generation_candidate.go.txt'))
 

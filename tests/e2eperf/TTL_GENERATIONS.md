@@ -1,84 +1,80 @@
-# Typed TTL generation experiment
+# TTL generation storage: measured candidates
 
-Incremental baseline: `8092601fd19d816cb0cef229c04571047b6cf9c5`.
-The current production map implementation is unchanged until this hypothesis
-passes measured acceptance. All previous accepted changes and rejected buffer
-experiments remain intact. The PR body identifies the exact tested source.
+Incremental production baseline: `8092601fd19d816cb0cef229c04571047b6cf9c5`.
+Production remains unchanged while these candidates are isolated. Earlier
+accepted optimizations and rejected buffer changes are not credited again.
 
-The previous real-file recovery CPU profile attributed 23.42% cumulatively to
-HashTrieMap.Swap and 12.66% to HashTrieMap.Load. Its cold insertions and repeated
-refreshes also box integer keys/deadlines. The candidate replaces each sync.Map
-generation with 32 independently locked map[int64]int64 shards. Original
-per-operation clock/deadline calculations, generation RLock, rotation, atomic
-counts, current-generation shadowing and old-generation expiry remain unchanged.
-The shard locks may add read contention and the empty-generation allocation is
-larger. These are tradeoffs to measure, not assumed improvements.
+## Current candidate: stable atomic deadline cells, one lookup
 
-The experiment changes two private test fixture factories to instantiate the
-candidate representation. Assertions, deadlines and concurrent loops are not
-modified. Additional public-API expiry, signed-ID, rotation and concurrent
-refresh tests execute without adapters on both revisions. A real expiry-bypass
-mutant must fail the intended public assertion, not compilation or timeout.
+Keep sync.Map and the existing outer generation lock. Prepare an initialized
+atomic.Int64 deadline cell and use LoadOrStore; a losing insertion refreshes the
+winning cell. Only unique insertion increments the existing count. Current
+entries are never deleted, and old generations are never refreshed; the outer
+lock protects these phase invariants. Cells/generations are not copied or pooled.
+The old-generation expiration path, clock calls and deadline arithmetic remain.
 
-Three fixed-work benchmark suites cover serial and parallel reads, refreshes,
-a deliberately contended single key, and real sealed-file recovery snapshots.
-Every suite has five alternating pairs plus identical-binary controls. Six full
-lifecycle loads include dense/sparse ACKs, gzip, no ACKs, large messages and
-rotation; before/after A/A uses the unchanged timing qualification. Profiles are
-separate. A good serial result cannot excuse an unexamined parallel regression.
+This third candidate removes the second prototype's speculative Load. It costs
+a small unpublished cell even for refreshes, trading some allocation savings
+for one map lookup on first insertion. This is not allocation-free refresh and
+must be measured against both cold and populated generations. The read path,
+Sync/ACK ordering, memory/GC configuration and file format do not change.
 
-The previous clock-only workflow remains a historical-baseline guardrail while
-this candidate is isolated. If the map design is adopted, its clock-only scope
-must be pinned rather than reused for a new attribution. This new workflow
-retains those public suites and expiry checks with a new incremental baseline.
-General full/race/crash/staging/recovery workflows remain.
+## Previous hypotheses and unfavorable results
 
-Reproduce with the same native Go version and dependencies, apply
-`ttl_generation_experiment.py --source <detached-candidate>` only to the candidate,
-and retain candidate.patch. Do not patch the baseline, change GOGC, suppress Sync
-or mix profiled runs into timing comparisons. Checkpoints, payload hashes and
-independent durable-receipt reconciliation remain mandatory. No capacity or
-whole-lifecycle latency improvement is claimed before reading the evidence.
+| Candidate | Measured benefit | Reason not adopted as default |
+| --- | --- | --- |
+| 32 locked integer-map shards | All-ACK recovery 2.419 to 1.654 ms; 674,355 to 144,798 B/op | Four-worker pure membership ratio 1.07179 (slower), with stable A/A; rotating seal CPU/elapsed and transfer-frontier RSS flags |
+| Atomic cells with Load before LoadOrStore | Serial refresh 1.508 to 0.975 ms; all-ACK recovery 2.405 to 1.842 ms; 673,780 to 150,853 B/op | First-insertion serial batch 1.471 to 1.677 ms, paired ratio 1.13339; dense replay CPU and final empty replay elapsed flags |
 
-## First measured hypothesis: sharded typed maps, not adopted
+Times are fixed-batch medians, not single-record latency. Recovery batches use
+8192 real-file records; pure parallel membership uses 32768 total queries;
+serial refresh is 8192 additions plus 8192 checks. Percentages/ratios use pairs,
+not ratios of the displayed medians. The two structures are not directly
+compared across separate runners. Both full-lifecycle qualifications failed;
+all six complete lifecycle comparisons in each campaign remained inconclusive.
+No adverse trial was deleted, filtered or replaced.
 
-Source `4e35790e88e9fd86fd1923ae1c742d99f4438cb1`, run
-[36440424645](https://github.com/Laisky/go-journal/actions/runs/36440424645),
-artifact 10979485159, SHA256
-`86dac85d5a558d993856a7dff96dc79eedb98d70f9d610b42b600f290e7053e2`.
-All 2,931 manifest files, 162-file source identity, six public reports, 100
-unprofiled lifecycles (195,840 deliveries), two diagnostic lifecycles, all
-assessments and qualification were independently recomputed. Full tests: 573
-passes; race: 1,719 passes; 67 Python methods; expiry mutant detected.
+## Reproducible evidence for the first two designs
 
-Real-file all-ACK replay improved from 2.419 to 1.654 ms per batch (paired ratio
-0.6848), with allocations 674,355 to 144,798 B/op. Sparse replay improved from
-2.893 to 2.353 ms. However four-worker pure membership regressed: 1.156 to
-1.280 ms per batch, paired ratio 1.07179, while its same-binary control was near
-one. Rotating-workload final seal CPU/elapsed and transfer frontier high-water
-RSS also had adverse flags. All complete lifecycles remained inconclusive and
-timing qualification failed. The first structure is not adopted by default.
-Its original helper and complete evidence remain pinned to that source.
+- Shards: source `4e35790e88e9fd86fd1923ae1c742d99f4438cb1`, run
+  [36440424645](https://github.com/Laisky/go-journal/actions/runs/36440424645),
+  artifact 10979485159; SHA256
+  `86dac85d5a558d993856a7dff96dc79eedb98d70f9d610b42b600f290e7053e2`.
+  Verified 2,931 manifest files and 162 source files; six public reports;
+  100 audited lifecycles / 195,840 deliveries; two diagnostic lifecycles;
+  573 full-suite and 1,719 race test/subtest passes; 67 Python methods.
+- Preloaded cells: source `7fa86a26aa1439abbc35b73c8a9d78ed48d55463`, run
+  [36442425833](https://github.com/Laisky/go-journal/actions/runs/36442425833),
+  artifact 10979133265; SHA256
+  `9ee081e8470558884a61d88c10f07b396ce41129d795fb144d652db59bf89a4b`.
+  Verified 2,955 manifest files and 163 source files; eight public reports;
+  100 audited lifecycles / 195,840 deliveries; two diagnostics; 573 full-suite
+  and 1,719 race test/subtest passes; 68 Python methods.
 
-## Second isolated hypothesis: stable atomic deadline cells
+Both archives retain their exact candidate.patch, source, binaries, profiles,
+positive/expiry-bypass tests and all assessments. No performance prototype is
+substituted for final checked-in-head acceptance. The PR body records the latest
+verified head and decision; the third candidate is still unadopted here.
 
-Keep sync.Map and the original outer generation lock, but store one stable
-atomic.Int64 deadline cell per key. Existing-key refresh uses Load followed by
-an atomic swap, avoiding new boxed deadlines and trie replacement nodes. Initial
-publication uses LoadOrStore; losing inserters refresh the winning cell and only
-the unique insertion increments the existing count. Current-generation entries
-are never deleted; the old generation is not refreshed. These phase invariants
-are protected by the existing generation lock, which remains externally visible.
+## Test and measurement boundaries
 
-This avoids the new shard read locks, but adds a cold-insertion lookup and cell
-allocation. The new cold-serial and cold-parallel8 batches therefore include
-constructor, all 8192 first insertions and Close rather than pre-populating them
-outside timing. Existing read/refresh/hot-key/recovery suites and full lifecycle
-loads remain unchanged. The two designs are not compared across separate hosts
-to claim causality; each is compared against the same declared baseline.
+The candidate changes only two private test fixture factories, never assertions
+or deadline/rotation/concurrency loops. Public expiry, signed-key, rotation and
+concurrent refresh tests execute on both revisions without adapters. Cold
+batches include construction, all 8192 first insertions and Close rather than
+pre-populating keys outside timing. Read, refresh, hot-key and sealed-file
+recovery suites use five alternating pairs and identical-binary controls.
+Six durable workloads cover dense/sparse ACKs, gzip, pending-only, large messages
+and rotation, with independent fsynced receipts, payload checks and SIGKILL.
+Before/after A/A uses the unchanged timing policy. Profiles are diagnostic-only.
 
-The second design remains isolated until its native results are read. It must
-not erase the first design's parallel regression or turn a microbenchmark into
-a whole-lifecycle or capacity claim. The candidate follows standard atomic
-publication semantics documented in https://pkg.go.dev/sync/atomic and
-https://pkg.go.dev/sync#Map.LoadOrStore; no unsafe or custom memory reclamation.
+Apply `ttl_generation_experiment.py --source <detached-candidate>` to a separate
+candidate checkout, keep the same benchmark source on both sides and retain
+all evidence. Never patch the baseline or tune GOGC/Sync to claim improvement.
+If adopted, pin the old clock-only campaign to its historical revision; do not
+pretend the new data structure is another clock-only change. General full/race,
+crash, staging and recovery controls remain required. No production capacity,
+universal speedup or physical power-loss guarantee follows from these tests.
+
+Primary atomic publication references: https://pkg.go.dev/sync/atomic and
+https://pkg.go.dev/sync#Map.LoadOrStore. No unsafe or custom memory reclamation.

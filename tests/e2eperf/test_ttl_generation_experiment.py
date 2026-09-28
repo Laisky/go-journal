@@ -1,5 +1,5 @@
 import unittest
-from ttl_generation_experiment import REPLACEMENTS, transform
+from ttl_generation_experiment import REPLACEMENTS, transform, omit_refresh
 from bench_pairs import parse
 
 class GenerationExperimentTest(unittest.TestCase):
@@ -20,3 +20,10 @@ class GenerationExperimentTest(unittest.TestCase):
         raw='BenchmarkPublicTTLColdInsert/cold-serial-4 64 100 ns/op 1024 B/op 8 allocs/op\nBenchmarkPublicTTLColdInsert/cold-parallel8-4 64 100 ns/op 1024 B/op 8 allocs/op\nPASS\n'
         self.assertEqual(len(parse(raw,'generation-cold',64)),2)
         with self.assertRaises(ValueError): parse(raw,'generation',64)
+
+    def test_refresh_mutation_is_exact_and_required(self):
+        old='return value.(*atomic.Int64).Swap(deadline), true'
+        changed=omit_refresh(old)
+        self.assertEqual(changed,'return value.(*atomic.Int64).Load(), true')
+        for text in (old+old, changed, ''):
+            with self.assertRaises(ValueError): omit_refresh(text)
