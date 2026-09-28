@@ -12,7 +12,7 @@ import (
 // inspect deadlines; the generation rotation defines when expiration matters.
 // These contracts execute unchanged against both revisions.
 func TestTTLLookupCurrentGenerationAndMisses(t *testing.T) {
-	s := &Int64SetWithTTL{ng: &sync.Map{}, og: &sync.Map{}}
+	s := &Int64SetWithTTL{ng: newTTLGeneration(), og: newTTLGeneration()}
 	for _, id := range []int64{math.MinInt64, 0, 1, math.MaxInt64} {
 		s.ng.Store(id, int64(1)) // even a past deadline remains valid in current generation
 		s.ngN++
@@ -43,7 +43,7 @@ func TestTTLLookupCurrentGenerationAndMisses(t *testing.T) {
 
 func TestTTLLookupOldGenerationDeadline(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		s := &Int64SetWithTTL{ng: &sync.Map{}, og: &sync.Map{}, ogN: 2}
+		s := &Int64SetWithTTL{ng: newTTLGeneration(), og: newTTLGeneration(), ogN: 2}
 		deadline := time.Now().Add(250 * time.Millisecond).UnixNano()
 		s.og.Store(int64(17), deadline)
 		s.og.Store(int64(18), deadline)
@@ -67,7 +67,7 @@ func TestTTLLookupOldGenerationDeadline(t *testing.T) {
 
 func TestTTLLookupConcurrentExpirationAndCurrentHits(t *testing.T) {
 	const count, workers = 512, 8
-	s := &Int64SetWithTTL{ng: &sync.Map{}, og: &sync.Map{}, ogN: count, ngN: count}
+	s := &Int64SetWithTTL{ng: newTTLGeneration(), og: newTTLGeneration(), ogN: count, ngN: count}
 	for i := 0; i < count; i++ {
 		s.og.Store(int64(i), int64(1))
 		s.ng.Store(int64(i+count), int64(1))

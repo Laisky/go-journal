@@ -15,8 +15,8 @@ jobs:
       GOTOOLCHAIN: local
       GOMAXPROCS: '4'
       BASELINE: 8092601fd19d816cb0cef229c04571047b6cf9c5
-      CANDIDATE_MODE: isolated
-      CANDIDATE_DESIGN: atomic-cells
+      CANDIDATE_MODE: adopted
+      CANDIDATE_DESIGN: atomic-cells-one-lookup
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -59,6 +59,25 @@ jobs:
             go version -m "$E/worker-$side" > "$E/build-$side.txt"
           done
           if [ "$CANDIDATE_MODE" = adopted ]; then test ! -s "$E/candidate.patch"; else test -s "$E/candidate.patch"; fi
+          python3 - <<'PYCODE' > "$E/adopted-source-check.json"
+          import json, os, pathlib, sys
+          sys.path.insert(0, 'tests/e2eperf')
+          from ttl_generation_experiment import transform
+          root=pathlib.Path(os.environ['RUNNER_TEMP'])
+          before,after=root/'generation-baseline',root/'generation-candidate'
+          assert (after/'set.go').read_text()==transform((before/'set.go').read_text())
+          assert (after/'ttl_generation.go').read_bytes()==pathlib.Path('tests/e2eperf/ttl_generation_candidate.go.txt').read_bytes()
+          for name,n in (('ttl_lookup_test.go',3),('reliability_test.go',1)):
+              text=(before/name).read_text(); old='ng: &sync.Map{}, og: &sync.Map{}'
+              assert text.count(old)==n
+              assert (after/name).read_text()==text.replace(old,'ng: newTTLGeneration(), og: newTTLGeneration()')
+          paths={str(p.relative_to(after)) for p in after.rglob('*.go')}
+          assert paths-{'ttl_generation.go'}=={str(p.relative_to(before)) for p in before.rglob('*.go')}
+          changed={'set.go','ttl_generation.go','ttl_lookup_test.go','reliability_test.go'}
+          for name in paths-changed:
+              assert (after/name).read_bytes()==(before/name).read_bytes(), name
+          print(json.dumps({'design':'atomic-cells-one-lookup','allowed_changed':sorted(changed),'go_files':len(paths)},indent=2))
+          PYCODE
       - name: Public baseline contracts and candidate race expiration checks
         shell: bash
         run: |

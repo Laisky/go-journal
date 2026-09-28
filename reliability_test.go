@@ -137,7 +137,7 @@ func TestRegressionInt64SetCountsUniqueIDs(t *testing.T) {
 
 func TestRegressionTTLExpiredCountConcurrent(t *testing.T) {
 	for round := 0; round < 100; round++ {
-		s := &Int64SetWithTTL{ng: &sync.Map{}, og: &sync.Map{}, ogN: 1}
+		s := &Int64SetWithTTL{ng: newTTLGeneration(), og: newTTLGeneration(), ogN: 1}
 		s.og.Store(int64(42), time.Now().Unix()-60)
 		start := make(chan struct{})
 		var wg sync.WaitGroup

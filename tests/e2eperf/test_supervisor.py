@@ -3,7 +3,17 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 from compare import run_supervisor, trial_deadline
+
+
+def process_terminated(stat):
+    """A task can vanish before open (ENOENT) or while reading procfs (ESRCH)."""
+    try:
+        state = stat.read_text().rsplit(')', 1)[1].split()[0]
+    except (FileNotFoundError, ProcessLookupError):
+        return True
+    return state == 'Z'
 
 
 class SupervisorTest(unittest.TestCase):
@@ -30,12 +40,25 @@ class SupervisorTest(unittest.TestCase):
             stat = Path('/proc')/marker.read_text()/'stat'
             # A killed orphan may await init reaping, but must not be running.
             for _ in range(100):
-                try:
-                    state = stat.read_text().rsplit(')', 1)[1].split()[0]
-                except FileNotFoundError:
-                    break
-                if state == 'Z':
+                if process_terminated(stat):
                     break
                 time.sleep(.01)
             else:
                 self.fail('worker survived controller timeout')
+
+    def test_proc_exit_during_open_or_read_is_terminated(self):
+        # Reproduce the native observer job's read-time ESRCH deterministically.
+        for error in (FileNotFoundError(2, 'No such file'), ProcessLookupError(3, 'No such process')):
+            with self.subTest(error=type(error)), mock.patch.object(Path, 'read_text', side_effect=error):
+                self.assertTrue(process_terminated(Path('/unused/proc/stat')))
+
+    def test_proc_permission_and_io_errors_are_not_success(self):
+        for error in (PermissionError(13, 'Permission denied'), OSError(5, 'I/O error')):
+            with self.subTest(error=type(error)), mock.patch.object(Path, 'read_text', side_effect=error):
+                with self.assertRaises(type(error)):
+                    process_terminated(Path('/unused/proc/stat'))
+
+    def test_live_proc_states_do_not_pass_cleanup(self):
+        for state in ('R', 'S', 'D', 'T', 'Z'):
+            with self.subTest(state=state), mock.patch.object(Path, 'read_text', return_value=f'42 (worker name) {state} 1 2'):
+                self.assertEqual(process_terminated(Path('/unused/proc/stat')), state == 'Z')

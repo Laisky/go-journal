@@ -1,6 +1,7 @@
-name: TTL lookup clock
+# Completed clock-only experiment. Pin its original source; typed generations
+# are evaluated by ttl-generation.yml, not misreported as a clock-only change.
+name: TTL lookup clock (historical)
 on:
-  pull_request:
   workflow_dispatch:
 permissions:
   contents: read
@@ -19,7 +20,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          ref: 8092601fd19d816cb0cef229c04571047b6cf9c5
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e

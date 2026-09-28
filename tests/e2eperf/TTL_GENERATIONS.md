@@ -1,10 +1,10 @@
 # TTL generation storage: measured candidates
 
 Incremental production baseline: `8092601fd19d816cb0cef229c04571047b6cf9c5`.
-Production remains unchanged while these candidates are isolated. Earlier
+The one-lookup atomic-cell candidate is now adopted for exact-head replication. Earlier
 accepted optimizations and rejected buffer changes are not credited again.
 
-## Current candidate: stable atomic deadline cells, one lookup
+## Adopted design: stable atomic deadline cells, one lookup
 
 Keep sync.Map and the existing outer generation lock. Prepare an initialized
 atomic.Int64 deadline cell and use LoadOrStore; a losing insertion refreshes the
@@ -54,7 +54,7 @@ No adverse trial was deleted, filtered or replaced.
 Both archives retain their exact candidate.patch, source, binaries, profiles,
 positive/expiry-bypass tests and all assessments. No performance prototype is
 substituted for final checked-in-head acceptance. The PR body records the latest
-verified head and decision; the third candidate is still unadopted here.
+verified head and decision; the exact-head acceptance is reported separately below and in the PR body.
 
 ## Test and measurement boundaries
 
@@ -78,3 +78,52 @@ universal speedup or physical power-loss guarantee follows from these tests.
 
 Primary atomic publication references: https://pkg.go.dev/sync/atomic and
 https://pkg.go.dev/sync#Map.LoadOrStore. No unsafe or custom memory reclamation.
+
+## Recovered third experiment and adoption
+
+The interrupted work reached source `827d86de6126e65ebfca2a5b81a49e9eda04f934`,
+run [36444398269](https://github.com/Laisky/go-journal/actions/runs/36444398269),
+artifact 10979842414. Its ZIP SHA256 is
+`f449efd0d80d8af66038c58cb306895ee78135972e5fbf8ec67bda94703358f1`.
+All 2,957 manifest files, the 164-file source tree, eight public benchmark
+reports and 100 unprofiled lifecycle audits were recomputed after recovery.
+195,840 source deliveries reconciled, with zero observed duplicates. These are
+historical isolated results, not the final checked-in implementation's results.
+
+| Fixed public batch | Baseline median | One-lookup median | Paired ratio / decision |
+| --- | ---: | ---: | --- |
+| Serial refresh, 8192 additions and checks | 1.496 ms | 1.156 ms | 0.7767; improved |
+| 32-worker same-key refresh | 1.863 ms | 0.723 ms | 0.3756; improved |
+| Cold serial construction and 8192 first insertions | 1.484 ms | 1.510 ms | 1.0171; inconclusive |
+| All-ACK real-file replay, 8192 records | 2.423 ms | 2.053 ms | 0.8502; improved |
+| Same replay allocation | 673,910 B | 280,281 B | 0.4157; improved |
+| Sparse-ACK replay allocation | 669,126 B | 471,450 B | 0.7046; improved |
+
+Public pure-read and cold-insertion comparisons had no exploratory regression
+flags, but inconclusive is not proof of equivalence. Sparse replay time narrowly
+missed the 5% rule (ratio 0.9476; interval [0.9318, 0.9545]). All six complete
+lifecycle comparisons and qualification remained inconclusive/failed. The
+rotating workload's delivery-frontier CPU increased 0.164 to 0.203 CPU-ms
+(ratio 1.2378, interval [1.1412, 1.9815]); it is retained, not dismissed as noise.
+
+The accepted production diff is exactly this experiment's candidate.patch:
+`set.go`, the new `ttl_generation.go`, and only the four concrete fixture-factory
+expressions in two existing test files. Assertions and test deadlines are not
+weakened. The native workflow now requires an empty candidate.patch, matches
+all other Go source files, checks the production helper against the measured
+template, and repeats cold/read/refresh/replay controls and durable lifecycles.
+The prior clock-only workflow is manual and pinned to 8092601f so these data
+structure changes cannot be mislabeled as clock-only improvements. General
+full/race/crash, recovery and staging controls remain active.
+
+## Interrupted CI failure: procfs task disappeared during read
+
+The preceding observer job [36444398273](https://github.com/Laisky/go-journal/actions/runs/36444398273)
+failed at test_supervisor.py: the killed process disappeared while reading its
+procfs status, producing ProcessLookupError (ESRCH), not FileNotFoundError
+(ENOENT). Artifact 10979881176 retains that failure. No timing trial was rerun
+to hide an unfavorable observation. The test now accepts those two disappearance
+states and zombie status, while permission/I/O errors and live task states do
+not count as successful cleanup. Deterministic injected-error tests accompany
+the real timeout/process-group test. Parent-death tests use the same exception
+boundary. No production supervisor timeout or termination behavior changes.

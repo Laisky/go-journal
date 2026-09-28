@@ -51,7 +51,7 @@ class ParentDeathTest(unittest.TestCase):
                         while time.monotonic() < until:
                             try:
                                 state = (Path('/proc')/str(pid)/'stat').read_text().rsplit(')',1)[1].split()[0]
-                            except FileNotFoundError:
+                            except (FileNotFoundError, ProcessLookupError):
                                 break
                             if state == 'Z':
                                 break

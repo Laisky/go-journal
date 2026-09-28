@@ -157,7 +157,7 @@ go tool pprof -http=127.0.0.1:8082 -no_browser -sample_index=alloc_space \
   -base="$E/diagnostic-cpu/scan/alloc-before.pprof" \
   "$E/worker" "$E/diagnostic-cpu/scan/alloc.pprof"
 go tool pprof -http=127.0.0.1:8083 -no_browser -sample_index=inuse_space \
-  "$E/worker" "$E/diagnostic-cpu/scan/heap.pprof"
+  "$E/worker" "$E/diagnostic-cpu/seed/heap.pprof"
 go tool trace -http=127.0.0.1:8084 "$E/diagnostic-trace/scan/trace.out"
 go tool trace -pprof=syscall "$E/diagnostic-trace/scan/trace.out" > "$E/syscall.pprof"
 go tool pprof -top "$E/worker" "$E/syscall.pprof"
@@ -227,3 +227,16 @@ python3 tests/e2eperf/staging_negative.py --out "$E/staging-negative"
 The bypass-staging mutation must fail a real rejected-payload/live-file assertion;
 compiler errors or timeouts are not accepted. The overflow campaign reconstructs
 the pinned first prototype only as a reference, never by weakening production.
+
+
+## Stable TTL generation storage
+
+The current incremental TTL storage comparison uses accepted clock-only head
+`8092601fd19d816cb0cef229c04571047b6cf9c5`. See [TTL_GENERATIONS.md](TTL_GENERATIONS.md)
+for rejected sharded/preloaded candidates, the one-lookup cell design, cold vs.
+refresh workloads and retained unfavorable observations. Run `bench_pairs.py`
+with suites `generation`, `generation-cold`, `membership`, and `ack-replay`.
+Use the same source-defined batches in both builds; cold insertion is not a
+prepopulated refresh benchmark. The adopted-mode native workflow checks the
+exact production/template scope and all durable lifecycle controls. Earlier
+clock-only results retain their original immutable source and baseline.
