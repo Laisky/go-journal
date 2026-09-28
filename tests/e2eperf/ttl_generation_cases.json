@@ -1,0 +1,8 @@
+[
+  {"name":"dense","count":4096,"payload":256,"writers":8,"ack_percent":100,"scans":0},
+  {"name":"sparse","count":4096,"payload":256,"writers":32,"ack_percent":50,"scans":0},
+  {"name":"gzip","count":1024,"payload":256,"writers":8,"ack_percent":100,"scans":0,"gzip":true},
+  {"name":"pending","count":1024,"payload":256,"writers":16,"ack_percent":0,"scans":0},
+  {"name":"large","count":128,"payload":262144,"writers":4,"ack_percent":50,"scans":1},
+  {"name":"rotating","count":4096,"payload":256,"writers":8,"ack_percent":100,"scans":1,"rotate_every":64}
+]
