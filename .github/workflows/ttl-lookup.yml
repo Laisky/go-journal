@@ -1,0 +1,129 @@
+name: TTL lookup clock
+on:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ttl-lookup-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  measured:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      GOTOOLCHAIN: local
+      GOMAXPROCS: '4'
+      BASELINE: 7a754e0786bf1de591f3c7cdee69ea5a8db04385
+      CANDIDATE_MODE: isolated
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version: '1.27.1'
+      - name: Freeze current source and clock-only candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          E="$RUNNER_TEMP/ttl-evidence"
+          mkdir -p "$E"
+          git rev-parse HEAD HEAD^{tree} > "$E/source.txt"
+          git archive --format=tar.gz HEAD > "$E/source.tar.gz"
+          git archive --format=tar.gz "$BASELINE" > "$E/baseline-source.tar.gz"
+          printf 'baseline=%s\nmode=%s\n' "$BASELINE" "$CANDIDATE_MODE" > "$E/campaign.txt"
+          go version > "$E/toolchain.txt"
+          go env -json GOARCH GOOS GOEXPERIMENT CGO_ENABLED GOAMD64 > "$E/compiler-env.json"
+          cp go.mod go.sum "$E/"
+          go mod download
+          go mod verify > "$E/module-verify.txt"
+          test -z "$(gofmt -l ttl_lookup_test.go ttl_lookup_benchmark_test.go)"
+          python3 -m unittest discover -s tests/e2eperf -p 'test_*.py' -v > "$E/python-tests.txt" 2>&1
+          for side in baseline candidate; do
+            T="$RUNNER_TEMP/ttl-$side"
+            ref="$BASELINE"; if [ "$side" = candidate ]; then ref=HEAD; fi
+            git worktree add --detach "$T" "$ref"
+            cmp go.mod "$T/go.mod"; cmp go.sum "$T/go.sum"
+            cp ttl_lookup*.go "$T/"
+            cp tests/e2eperf/*.go "$T/tests/e2eperf/"
+            if [ "$side" = candidate ] && [ "$CANDIDATE_MODE" = isolated ]; then
+              python3 tests/e2eperf/ttl_lookup_experiment.py --source "$T"
+              gofmt -w "$T/set.go"
+            fi
+            (cd "$T" && git diff -- set.go > "$E/$side.patch" && go build -mod=readonly -trimpath -o "$E/worker-$side" ./tests/e2eperf && go test -mod=readonly -trimpath -c -o "$E/bench-$side" .)
+            go version -m "$E/worker-$side" > "$E/build-$side.txt"
+          done
+          if [ "$CANDIDATE_MODE" = adopted ]; then test ! -s "$E/candidate.patch"; else test -s "$E/candidate.patch"; fi
+      - name: Preserve TTL generation deadline concurrency and failure behavior
+        shell: bash
+        run: |
+          set -euo pipefail
+          E="$RUNNER_TEMP/ttl-evidence"
+          (cd "$RUNNER_TEMP/ttl-baseline" && go test -mod=readonly -count=1 -json -run '^TestTTLLookup' . > "$E/baseline-boundaries.jsonl")
+          cd "$RUNNER_TEMP/ttl-candidate"
+          go vet -mod=readonly ./... > "$E/vet.txt" 2>&1
+          go test -mod=readonly -count=1 -json ./... > "$E/full.jsonl"
+          go test -mod=readonly -race -shuffle=on -count=3 -json ./... > "$E/race.jsonl"
+          python3 tests/e2eperf/ttl_lookup_experiment.py --source . --negative "$E/negative" > "$E/negative.json"
+          git diff --exit-code -- go.mod go.sum
+      - name: Public membership and recovery-loader suites with identical-binary controls
+        shell: bash
+        run: |
+          set -euo pipefail
+          E="$RUNNER_TEMP/ttl-evidence"
+          for suite in membership ack-replay; do
+            python3 tests/e2eperf/bench_pairs.py --baseline "$E/bench-baseline" --candidate "$E/bench-candidate" --suite "$suite" --pairs 5 --iterations 64 --out "$E/public-$suite" > "$E/public-$suite.json"
+            python3 tests/e2eperf/bench_pairs.py --baseline "$E/bench-candidate" --candidate "$E/bench-candidate" --suite "$suite" --pairs 5 --iterations 64 --out "$E/aa-$suite" > "$E/aa-$suite.json"
+          done
+      - name: Full durable workloads bracketed by unchanged qualification
+        shell: bash
+        run: |
+          set -euo pipefail
+          E="$RUNNER_TEMP/ttl-evidence"
+          printf '%s\n' '[{"name":"same-small","count":512,"payload":256,"writers":8,"ack_percent":50,"scans":0},{"name":"same-dense","count":2048,"payload":256,"writers":8,"ack_percent":100,"scans":0}]' > "$E/aa-cases.json"
+          python3 tests/e2eperf/observe.py --out "$E/host-before" -- python3 tests/e2eperf/compare.py --baseline "$E/worker-candidate" --candidate "$E/worker-candidate" --cases "$E/aa-cases.json" --pairs 5 --out "$E/aa-before"
+          python3 tests/e2eperf/observe.py --out "$E/host-paired" -- python3 tests/e2eperf/compare.py --baseline "$E/worker-baseline" --candidate "$E/worker-candidate" --cases tests/e2eperf/ttl_lookup_cases.json --pairs 5 --out "$E/paired"
+          python3 tests/e2eperf/observe.py --out "$E/host-after" -- python3 tests/e2eperf/compare.py --baseline "$E/worker-candidate" --candidate "$E/worker-candidate" --cases "$E/aa-cases.json" --pairs 5 --out "$E/aa-after"
+          python3 tests/e2eperf/qualify.py --before "$E/aa-before/report.json" --after "$E/aa-after/report.json" > "$E/timing-qualification.json"
+      - name: Separate fixed-work CPU profiles and lifecycle trace
+        shell: bash
+        run: |
+          set -euo pipefail
+          E="$RUNNER_TEMP/ttl-evidence"
+          for side in baseline candidate; do
+            "$E/bench-$side" -test.run='^$' -test.bench='^BenchmarkPublicACKMembership/current-hits$' -test.benchtime=2048x -test.cpuprofile="$E/$side-membership.pprof" > "$E/$side-membership-profile.log"
+            "$E/bench-$side" -test.run='^$' -test.bench='^BenchmarkPublicACKReplay/all-acked$' -test.benchtime=512x -test.cpuprofile="$E/$side-replay.pprof" > "$E/$side-replay-profile.log"
+            go tool pprof -top -nodecount=25 -tagfocus=phase=public-ack-membership "$E/bench-$side" "$E/$side-membership.pprof" > "$E/$side-membership-cpu.txt"
+            go tool pprof -top -nodecount=25 -tagfocus=phase=public-ack-replay "$E/bench-$side" "$E/$side-replay.pprof" > "$E/$side-replay-cpu.txt"
+            python3 tests/e2eperf/run.py --binary "$E/worker-$side" --out "$E/$side-trace" --count 2048 --payload 256 --writers 8 --ack-percent 100 --scans 0 --diagnostics trace > "$E/$side-trace.log"
+            go tool trace -pprof=sync "$E/$side-trace/transfer/trace.out" > "$E/$side-transfer-sync.pprof"
+          done
+      - name: Retain complete evidence even on failure
+        if: always()
+        shell: bash
+        run: |
+          E="$RUNNER_TEMP/ttl-evidence"
+          mkdir -p "$E"; cd "$E"
+          find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
+      - name: Recompute raw benchmarks and lifecycle evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          E="$RUNNER_TEMP/ttl-evidence"
+          for suite in membership ack-replay; do
+            python3 tests/e2eperf/bench_pairs.py --verify "$E/public-$suite" > /dev/null
+            python3 tests/e2eperf/bench_pairs.py --verify "$E/aa-$suite" > /dev/null
+          done
+          python3 tests/e2eperf/verify.py --root "$E" --campaign paired=worker-baseline,worker-candidate --campaign aa-before=worker-candidate,worker-candidate --campaign aa-after=worker-candidate,worker-candidate > "$RUNNER_TEMP/ttl-verified.json"
+          cat "$RUNNER_TEMP/ttl-verified.json"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: ttl-lookup-${{ github.event.pull_request.head.sha || github.sha }}
+          path: ${{ runner.temp }}/ttl-evidence
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14

@@ -42,12 +42,17 @@ unfavorable trials to obtain a passing label. Prior empty-replay CPU/RSS concern
 are not asserted solved. Offered-rate/entropy/soak workloads remain distinct scope;
 no global-optimality or production-capacity claim follows from these fixtures.
 
-## Active ACK writer budget experiment
+## Completed ACK-only budget experiment
 
-See [ACK_WRITER_BUDGET.md](ACK_WRITER_BUDGET.md). Incremental baseline `7a754e07`.
-Only the ACK bufio capacity is a candidate; production remains unchanged until
-matched evidence and prior large-record/GC regressions are inspected. The exact
-original directory/ACK-scan and staging changes remain in place. The next step
-is read the dedicated artifact, decide, then verify an adopted checked-in head
-or document rejection without enabling the candidate. Do not mix either path's
-measurements or repeat failed timing trials to obtain a favorable label.
+The eight-byte ACK writer candidate was rejected as a default. Constructor and
+rotation allocation savings accompanied increased large-record GC/CPU. See
+[ACK_WRITER_BUDGET.md](ACK_WRITER_BUDGET.md) for complete evidence and limits.
+Production buffer sizes remain unchanged. The experiment is now manual-only.
+
+## Active TTL lookup experiment
+
+[TTL_LOOKUP.md](TTL_LOOKUP.md) tests deferring clock reads until a lookup needs
+old-generation expiry validation. Baseline remains `7a754e07`; no rejected buffer
+change is present. Inspect isolated public-API and full-lifecycle evidence before
+adopting, then replicate the checked-in head. Preserve all adverse observations
+and the existing p99 qualification rule.

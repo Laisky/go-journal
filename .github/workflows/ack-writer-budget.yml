@@ -1,6 +1,5 @@
 name: ACK writer budget
 on:
-  pull_request:
   workflow_dispatch:
 permissions:
   contents: read
@@ -19,7 +18,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          ref: 7d9eb2c95cbdefe7f01d3c9a4a5469cf62508d5e
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
@@ -129,7 +128,7 @@ jobs:
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
-          name: ack-writer-budget-${{ github.event.pull_request.head.sha || github.sha }}
+          name: ack-writer-budget-reproduction-${{ github.run_id }}
           path: ${{ runner.temp }}/ack-budget-evidence
           include-hidden-files: true
           if-no-files-found: error
