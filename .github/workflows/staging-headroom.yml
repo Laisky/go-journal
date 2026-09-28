@@ -1,6 +1,5 @@
 name: Staging framing slack
 on:
-  pull_request:
   workflow_dispatch:
 permissions:
   contents: read
@@ -19,7 +18,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          # Reproduce the rejected experiment, not a moving future candidate.
+          ref: 9855736005f75662acc3af3315c48212efaee73f
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e

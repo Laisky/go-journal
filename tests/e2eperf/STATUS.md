@@ -29,6 +29,20 @@ contiguous reference, correctness/mutation suites and before/after A/A controls.
 The PR body is the final exact-head CI/artifact record, not a prediction based on
 an isolated prototype. See STAGING.md for every baseline and quantitative result.
 
+## Completed framing-slack follow-up
+
+The 4 KiB arena extension remains **unadopted**. Its pinned experiment is retained
+in [HEADROOM.md](HEADROOM.md): 80 audited lifecycles, lower boundary write counts,
+but no qualified end-to-end benefit, approximately 8 KiB more constructor
+allocation and an unfavorable control CPU observation. The workflow is now
+manual-only and checks out its original source. No timing sample was replaced.
+
+The accepted production integration is `1db7ba2d`; source `9855736` revalidated
+that unchanged Go implementation with 150 primary lifecycles. Their exact source,
+artifacts, unfavorable results and verification are linked in the two reports.
+The PR body identifies the newest verified head after this consolidation; do not
+substitute a historical prototype's results for its exact-head validation.
+
 ## Acceptance limits and remaining work
 
 Allocation/GC gains are not uniform RSS or latency gains. Do not relax the A/A
