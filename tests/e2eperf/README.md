@@ -189,7 +189,7 @@ correctness checks completed, not that every performance metric improved.
 
 The controller now reacts to checkpoint stdout and Linux process-exit notifications
 without waiting for the 20 ms resource-sampling tick. This is a **harness change**,
-not a journal optimization. New trial options/summaries identify `events-v1` and
+not a journal optimization. New trial options/summaries identify `events-v2` and
 the actual `pidfd` or `pipe-poll` backend; mixed methods/backends are rejected by
 paired reporting. Use one frozen current harness against both library versions.
 Do not compare old poll-based lifecycle numbers directly with new event-based ones.

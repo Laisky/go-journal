@@ -21,6 +21,7 @@ import time
 
 from supervised_exec import install_signal_handlers
 from monitor import METHOD, observe
+from monitor_audit import observation_summary
 
 
 def require(value, message):
@@ -301,39 +302,7 @@ def audit(root):
                 entry.update(records_s=work / elapsed, allocated_bytes_per_record=allocated / work,
                              cpu_us_per_record=cpu * 1e6 / work, p99_ms=percentile(p['latency_ns']) / 1e6)
             summary['phases'][mode + '/' + p['name']] = entry
-    if 'measurement_method' in options:
-        require(options['measurement_method'] == METHOD, 'unknown measurement method')
-        summary['measurement_method'] = METHOD
-        phase_ns = sum(p['End'] - p['Begin'] for mode in modes for p in results[mode]['phases'])
-        process_ns = sum(p['duration_ns'] for p in processes.values())
-        require(0 < phase_ns <= process_ns, 'phase time exceeds observed lifecycle')
-        summary['worker_phase_seconds'] = phase_ns / 1e9
-        summary['outside_phase_seconds'] = (process_ns - phase_ns) / 1e9
-        summary['worker_phase_fraction'] = phase_ns / process_ns
-        backends = set()
-        for mode in results:
-            proc = read(root / mode / 'process.json')
-            require(type(proc.get('duration_ns')) is int and proc['duration_ns'] > 0,
-                    'invalid observed process duration')
-            require(proc.get('held') is (mode in ('seed', 'transfer')), 'wrong observed checkpoint mode')
-            require(type(proc.get('returncode')) is int and
-                    proc['returncode'] == (-9 if mode in ('seed', 'transfer') else 0), 'wrong observed exit')
-            info = proc.get('observer', {})
-            require(info.get('method') == METHOD, 'missing/mixed observer method')
-            require(info.get('backend') in ('pidfd', 'pipe-poll'), 'missing observer backend')
-            backends.add(info['backend'])
-            require(sum(p['End'] - p['Begin'] for p in results[mode]['phases']) <= proc['duration_ns'],
-                    'phase time exceeds worker observation')
-            require(type(info.get('started_ns')) is int and type(info.get('exit_observed_ns')) is int
-                    and 0 < info['started_ns'] <= info['exit_observed_ns'], 'invalid exit observation')
-            require(info['exit_observed_ns'] - info['started_ns'] <= proc['duration_ns'], 'observation outside lifecycle')
-            require(info.get('killed_at_checkpoint') is (mode in ('seed', 'transfer')), 'unsupervised checkpoint')
-            if mode in ('seed', 'transfer'):
-                require(type(info.get('checkpoint_ns')) is int and type(info.get('kill_sent_ns')) is int
-                        and info['started_ns'] <= info['checkpoint_ns'] <= info['kill_sent_ns'] <= info['exit_observed_ns'],
-                        'invalid checkpoint/kill/exit ordering')
-        require(len(backends) == 1, 'mixed observer backends within trial')
-        summary['observer_backends'] = sorted(backends)
+    summary.update(observation_summary(root, options, results, processes))
     summary['seed_sync_p99_ms'] = percentile([r['Durable'] - r['Begin'] for r in results['seed']['records']]) / 1e6
     summary['latency_ms'] = {}
     for label, mode, start, end in (

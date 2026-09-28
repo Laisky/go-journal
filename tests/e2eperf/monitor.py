@@ -15,7 +15,7 @@ import subprocess
 import time
 from typing import BinaryIO, Callable
 
-METHOD = 'events-v1'
+METHOD = 'events-v2'
 READ_BYTES = 64 << 10
 MAX_LOG_BYTES = 16 << 20
 
@@ -72,7 +72,7 @@ def observe(process: subprocess.Popen, log: BinaryIO, *, checkpoint: Path | None
         raise ValueError('positive finite timeout and sample interval required')
     if process.stdout is None:
         raise ValueError('worker stdout must be a pipe')
-    metadata.update(method=METHOD, backend='uninitialized', fallback_reason=None,
+    metadata.update(completed=False, method=METHOD, backend='uninitialized', fallback_reason=None,
                     started_ns=started_ns, first_output_ns=None,
                     checkpoint_ns=None, kill_sent_ns=None, exit_observed_ns=None,
                     sample_interval_ns=int(sample_interval * 1e9), samples=0,
@@ -147,8 +147,12 @@ def observe(process: subprocess.Popen, log: BinaryIO, *, checkpoint: Path | None
                         pass
                     if checkpoint is not None and not metadata['killed_at_checkpoint']:
                         raise ValueError('held worker exited without supervised checkpoint')
-                    return code
+                    break
     finally:
         if pidfd is not None:
             os.close(pidfd)
         process.stdout.close()
+    # Publish success only after output/pidfd cleanup. An exception during
+    # draining or close must never be reconstructed offline as a valid trial.
+    metadata['completed'] = True
+    return code

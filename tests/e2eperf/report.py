@@ -43,10 +43,27 @@ def metrics(summary):
     if summary.get('passed') is not True or summary.get('diagnostic_only') is not False:
         raise ValueError('only explicitly unprofiled, audited trials may be compared')
     out = {key: summary[key] for key in ('lifecycle_seconds', 'seed_sync_p99_ms')}
+    for key in ('worker_phase_seconds', 'outside_phase_seconds'):
+        if key in summary:
+            out[key] = summary[key]
     for name, phase in summary['phases'].items():
         for key in ('seconds', 'cpu_seconds', 'allocated_bytes', 'peak_rss_mib'):
             out[f'{name}/{key}'] = phase[key]
     return out
+
+
+def observation_signature(summary):
+    method = summary.get('measurement_method', 'poll-v1')
+    backends = summary.get('observer_backends')
+    if method == 'poll-v1' and 'measurement_method' not in summary and backends is None:
+        return method, 'poll-v1'
+    if method == 'poll-v1':
+        raise ValueError('mixed observation backends; legacy report carries event metadata')
+    if method not in ('events-v1', 'events-v2'):
+        raise ValueError('unknown observation method')
+    if type(backends) is not list or len(backends) != 1 or backends[0] not in ('pidfd', 'pipe-poll'):
+        raise ValueError('mixed observation backends; missing or invalid event backend')
+    return method, backends[0]
 
 
 def analyze(report):
@@ -67,10 +84,10 @@ def analyze(report):
     output = {}
     for case in cases:
         raw = [[groups[(case, i, side)] for i in range(count)] for side in ('baseline', 'candidate')]
-        if len({s.get('measurement_method', 'poll-v1') for side in raw for s in side}) != 1:
+        signatures = [observation_signature(s) for side in raw for s in side]
+        if len({s[0] for s in signatures}) != 1:
             raise ValueError('different observation methods; not a library performance comparison')
-        backends = [tuple(s.get('observer_backends', ['poll-v1'])) for side in raw for s in side]
-        if any(len(b) != 1 for b in backends) or len(set(backends)) != 1:
+        if len(set(signatures)) != 1:
             raise ValueError('mixed observation backends; timing is not comparable')
         if len({s['count'] for side in raw for s in side}) != 1:
             raise ValueError('different record counts')

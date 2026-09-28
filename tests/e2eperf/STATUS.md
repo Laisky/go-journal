@@ -1,83 +1,39 @@
 # Performance acceptance checkpoint
 
 Owner: [PR #10](https://github.com/Laisky/go-journal/pull/10), branch
-`perf/journal-e2e-20260927`, target `master`. Continue this branch; no automatic
-merge, deployment, force-push or replacement PR. The PR body is the exact-head
-validation record; the files below preserve distinct measured iterations.
+`perf/journal-e2e-20260927`, target `master`. Continue this branch. No automatic
+merge, deployment, force-push, replacement PR or deletion of unrelated branches.
 
-## Recovered interrupted work
+## Consolidated production state
 
-The interrupted work reached `71790780de0b665e1c33b2583c424fcc770944b2`, not just
-`df475e4f`. Its five workflows completed successfully. Artifact
-[10944316965](https://github.com/Laisky/go-journal/actions/runs/36356638836/artifacts/10944316965)
-was downloaded again: 5,439 manifest files, all 170 lifecycle audits, paired
-assessments, medians and timing qualification were recomputed. The 98-file
-source tree matches `999d1ebbb35ae95922b9f7a09119de3d8250520c`.
+Retain ID-only scans, overlapping Sync barriers, lazy Sync notification,
+operation-local data and ACK reader reuse, and parent-death-safe load supervision.
+The accepted ACK integration is `9acb382533d23b918debe9f5a80345de63340e16`.
+Its native artifact, resource improvements, timing-qualification failures and
+small-phase regressions remain in the PR history and [ACK_REUSE.md](ACK_REUSE.md).
+The 1 MiB data-reader and 4 KiB/256 B writer experiments remain rejected.
 
-Retained: ID-only scanning, overlapping Sync barriers, lazy Sync notification,
-operation-local data-reader reuse, and parent-death-safe load supervision.
-The 1 MiB data-reader and 4 KiB/256 B writer-buffer experiments remain rejected.
-Their reports and sources are not overwritten. See [SCAN_REUSE.md](SCAN_REUSE.md),
-[WRITER_RESULTS.md](WRITER_RESULTS.md), [SYNC_RESULTS.md](SYNC_RESULTS.md) and
-[RESULTS.md](RESULTS.md) for their distinct baselines and limitations.
+## Current harness iteration
 
-The remote branch inventory contained the existing PR10 branch and historical
-repository branches, not an additional unmerged ACK experiment branch. The
-available local runtime had no earlier journal worktree or live load process.
-Recovered archives remain immutable; experimental GitHub runner worktrees are
-isolated from the PR branch. Unrelated historical branches were not deleted.
+The interrupted local observer patch is consolidated with remote observer work.
+See [OBSERVER_RESULTS.md](OBSERVER_RESULTS.md). This changes measurement and
+validation, not Go production code or synchronization behavior. Exact CHECKPOINT
+and pidfd observation replace resource-tick-delayed polling; events-v2 evidence
+requires successful cleanup and consistent method/backend across every process.
+Paired reports reject mixed measurement methods. Real HTTP framing/startup tests
+protect the independent durable-receipt peer against transcription regressions.
 
-## Previous implemented iteration: ACK readers
+Local validation passed 51 Python methods, one 20-pair controller comparison and
+six real public-API lifecycles using the verified prior worker. Native exact-head
+validation is tracked by the PR description and Actions artifacts, not inferred
+from those local runs. The new observer workflow rebuilds the worker, repeats
+two controller experiments and six lifecycle cases. Existing native full/race/fuzz,
+negative controls and ACK/segment comparisons are retained.
 
-Incremental baseline: `71790780de0b665e1c33b2583c424fcc770944b2`.
-ACK-reader reuse is integrated in maximum-ID scanning, replay ACK-snapshot loading
-and cleanup planning. One original-size plaintext buffer belongs to each traversal;
-release resets its absolute-ID base, scratch, unread bytes, errors and file
-reference. Gzip state is never reused. No global cache or synchronization change.
+## Next acceptance step
 
-The initial isolated campaign
-[36358799934](https://github.com/Laisky/go-journal/actions/runs/36358799934) used
-`21c9fcc959d34013336c13f7b14fbb88a3e81735` plus retained `candidate.patch`.
-Its 5,282 manifest files and 160 lifecycle audits were verified independently,
-including all assessments, medians and timing qualification. Source tree:
-`4deb279e66e142f650e14b627c4c786bc2405435`. All 88,320 source deliveries reconciled.
-The accepted resource scope and every unfavorable observation are recorded in
-[ACK_REUSE.md](ACK_REUSE.md); whole-lifecycle timing is not qualified.
-
-The checked-in `legacy.go` blob `78b91e4bedd91c1f871ab33b07064025abe29a43`
-exactly matches that experiment's integration. The ACK mutation runner also
-uses the existing parent-death-safe supervision. The adopted-mode workflow
-requires an empty candidate patch, tests the actual checked-in implementation,
-and repeats the frozen ACK/segment cases and before/after A/A controls.
-The PR body names that exact final run, head, artifact and verification result;
-an isolated prototype's success is not substituted for exact-head validation.
-
-## Current iteration: recovered event-driven observation
-
-The unpushed observer patch is now reconciled with accepted head `9acb3825`.
-ACK/data reader reuse and all production code remain unchanged. See
-[OBSERVER_RESULTS.md](OBSERVER_RESULTS.md) for event-based checkpoint/exit
-handling, metric continuity, strict per-process auditing and reproduction.
-New and legacy observer measurements cannot be mixed in library comparisons.
-
-The dedicated observer workflow measures synthetic notification overhead and
-runs real native lifecycle/profile controls. The existing main campaign retains
-its ACK baseline and full correctness/resource/qualification checks. The PR body
-is the final exact-head CI/evidence record; do not promote a pending or historical
-run into current acceptance. These are controller improvements, not new claims
-about journal throughput or the cause of all p99 variability.
-
-## Remaining limits and next decisions
-
-Keep every failed/unfavorable observation. Preserve identical workers, dependency
-graphs, compiler settings, workloads and synchronization cadence across versions.
-CPU/heap/trace runs are diagnostic-only. A/A qualification is independent of
-correctness; its p99 requirements are not relaxed to obtain favorable claims.
-Allocation/GC reductions are not uniform RSS or whole-lifecycle latency gains.
-
-Remaining profiling candidates include per-file metadata/open/close work and
-representative offered-rate/long-duration loads. They are not implemented or
-claimed as improvements. Removing file verification or durability barriers is
-not an acceptable shortcut. First inspect the exact-head measurements and
-qualification before selecting another isolated hypothesis. No global-optimality
-or sustainable production-capacity claim is made by these synthetic trials.
+Read and verify exact-head artifacts, recompute every audit/assessment and retain
+all adverse samples. Update the PR with the exact verified head, not merely the
+last locally tested state. Do not conflate controller delay, scan resource savings,
+retained heap and whole-lifecycle throughput. Keep the predeclared A/A p99 policy;
+failed timing qualification cannot be relaxed to manufacture a speedup.

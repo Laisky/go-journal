@@ -24,7 +24,7 @@ class ReportTest(unittest.TestCase):
 
     def test_mixed_observation_methods_cannot_claim_library_improvement(self):
         report = campaign()
-        report['trials'][0]['summary']['measurement_method'] = 'events-v1'
+        report['trials'][0]['summary'].update(measurement_method='events-v1', observer_backends=['pidfd'])
         with self.assertRaisesRegex(ValueError, 'different observation methods'):
             analyze(report)
 
