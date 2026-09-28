@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "reference": "ad3ce410a1c6005b581ead6c5fdf6a24e9c5d324",
+  "iterations": 256,
+  "rounds": 9,
+  "gomaxprocs": 4,
+  "cpu_ratio_limit": 1.20,
+  "control_interval": [0.80, 1.20],
+  "relative_bytes_ratio": 1.05,
+  "relative_bytes_slack": 1024,
+  "relative_allocs_ratio": 1.05,
+  "relative_allocs_slack": 4,
+  "cases": {
+    "staging-256k": {"max_bytes": 4096, "max_allocs": 8, "cpu_gate": false},
+    "staging-1m": {"max_bytes": 4096, "max_allocs": 8, "cpu_gate": false},
+    "staging-overflow": {"max_bytes": 8192, "max_allocs": 12, "cpu_gate": false},
+    "ttl-hits": {"max_bytes": 1024, "max_allocs": 8, "cpu_gate": true},
+    "ttl-refresh": {"max_bytes": 180224, "max_allocs": 22000, "cpu_gate": true},
+    "ack-import": {"max_bytes": 81920, "max_allocs": 32, "cpu_gate": true},
+    "ack-maximum": {"max_bytes": 81920, "max_allocs": 32, "cpu_gate": true},
+    "directory": {"max_bytes": 300000, "max_allocs": 2500, "cpu_gate": false},
+    "data-segments": {"max_bytes": 300000, "max_allocs": 3000, "cpu_gate": false},
+    "ack-segments": {"max_bytes": 300000, "max_allocs": 3000, "cpu_gate": false}
+  }
+}

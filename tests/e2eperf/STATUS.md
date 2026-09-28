@@ -1,54 +1,38 @@
-# Performance acceptance checkpoint
+# PR #10: implementation complete, regression-protected review candidate
 
-Owner: [PR #10](https://github.com/Laisky/go-journal/pull/10), branch
-`perf/journal-e2e-20260927`, target `master`. Continue this branch; no force-push,
-replacement PR, automatic merge/deployment or unrelated branch deletion.
+Branch `perf/journal-e2e-20260927`, target `master`. Production implementation is
+frozen at `ad3ce410a1c6005b581ead6c5fdf6a24e9c5d324`; this closeout adds CI and
+acceptance documentation, not another unmeasured production optimization.
+The PR body identifies the exact verified closeout commit and readiness status.
 
-## Recovered and preserved production
+## Retained scope
 
-Interrupted work had reached c013e4b8, four commits beyond the stale 8092601f
-PR description. Its exact tree, native artifact and audits were recovered.
-Retain stable atomic TTL deadline cells, the clock lookup change, buffered ACK
-maxima, single-pass directory metadata, transaction staging, reader reuse,
-overlapping Sync with lazy notification and events-v2 process observation.
-[TTL_GENERATIONS.md](TTL_GENERATIONS.md) preserves accepted/rejected designs;
-[ACK_IMPORT.md](ACK_IMPORT.md) records recovered exact-head results and evidence.
-No unrelated branches or earlier reports were deleted.
+ID-only recovery, operation-local readers, buffered ACK maxima/imports,
+single-pass directory metadata, overlapping Sync with lazy notification,
+transactional prefix/overflow staging, conditional TTL clocks and stable atomic
+deadline cells remain intact. Events-v2 supervision, independent fsynced receipts,
+real crash/replay tests, negative controls and historical adverse samples remain.
 
-## Current iteration: buffered ACK imports
+## Permanent protection
 
-Incremental baseline c013e4b87458da53950c7b530726d29f035bfe35. The only existing
-Go production change is readOffset in serialize.go: complete buffered words
-avoid ReadFull dispatch/copy, while partial reads and pending errors retain it.
-Each word is consumed before invoking user code. The adopted implementation
-must equal the separately measured candidate transform and have an empty patch.
-The isolated public import/bitmap improvements are recorded in ACK_IMPORT.md;
-real TTL replay and full-lifecycle gains were not established.
+[Benchmark regression gate](../benchgate/README.md) runs on all PRs and master
+pushes, with fixed absolute allocation budgets, pinned and rolling reference
+comparisons, counterbalanced CPU controls, strict evidence validation and two
+real deliberately regressed binaries that must be detected. CPU uncertainty or
+an unstable CPU control is not a pass. Wall-clock durable p99 is not substituted
+for process CPU or claimed qualified by the new gate.
 
-The first general race suites timed out because the new differential test
-rechecked immutable residual bytes quadratically. The linear correction keeps
-all fixtures and every decoded word/error/cursor/read-count assertion, and
-retains complete-tail checks at errors. Existing timeouts are unchanged; the
-failed run and completed isolated performance observations are not deleted.
-Final exact-head native full/race/fuzz, real cursor mutant and paired evidence
-must pass before the PR body marks the new publication verified.
+The same workflow runs a four-case, five-pair cumulative original-baseline E2E
+comparison and independently re-audits each lifecycle. Completed ACK-import,
+recovery and staging optimization campaigns are manual-only at their historical
+source; ongoing Go/race/crash/replay/append/observer coverage stays automatic.
 
-## Evidence and next acceptance step
+## Review and follow-up boundaries
 
-Read the exact-head artifacts, recheck their manifest/source identity, and
-recompute all raw benchmarks, lifecycle audits, assessments and qualification.
-Keep small-phase/RSS regressions and A/A failures visible. The PR body is the
-latest verification record; prototype figures do not become final-head results.
-Completed typed-generation and clock-only workflows are manual/pinned, while
-their behavior tests remain in active full/race suites.
-
-## Rejected alternatives and limits
-
-ACK_WRITER_BUDGET.md, HEADROOM.md and WRITER_RESULTS.md retain rejected buffer
-changes. RECOVERY_SCAN.md, STAGING.md, ACK_REUSE.md, SCAN_REUSE.md,
-SYNC_RESULTS.md and OBSERVER_RESULTS.md retain distinct earlier baselines and
-adverse observations. Do not tune GOGC/Sync or relax A/A p99 qualification to
-manufacture gains. Allocation, read-only, cold/refresh and lifecycle results
-must remain separate; inconclusive is not equivalent. Representative entropy,
-open-loop offered-rate and long-soak testing remain separate scope. No global
-optimality, universal speedup or sustainable production-capacity claim.
+Stop adding speculative optimization here. Ready-for-review is not a universal
+speed/capacity certificate: prior RSS, empty-replay and oversized-write timing
+observations remain in the PR-wide evidence ledger. Deployment-specific p99,
+representative entropy, open-loop load, long soaks and physical power loss remain
+separate work. Do not weaken Sync/ACK ordering, raise budgets automatically,
+filter samples, change GC policy or retry until favorable. No automatic merge,
+deployment, force push or unrelated branch deletion.

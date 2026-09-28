@@ -1,0 +1,6 @@
+[
+  {"name":"plain-concurrent","count":512,"payload":1024,"writers":16,"ack_percent":50,"scans":4},
+  {"name":"gzip-concurrent","count":512,"payload":1024,"writers":8,"ack_percent":50,"scans":4,"gzip":true},
+  {"name":"large-pending","count":32,"payload":1048576,"writers":4,"ack_percent":0,"scans":2},
+  {"name":"rotating-sparse","count":256,"payload":512,"writers":4,"ack_percent":50,"scans":8,"rotate_every":16}
+]
