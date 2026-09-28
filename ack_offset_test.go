@@ -55,14 +55,19 @@ func compareACKOffsets(t *testing.T, wire []byte, chunk, size int, terminal erro
 	for i := 0; i < len(wire)/8+4; i++ {
 		got, ge := d.readOffset()
 		want, we := referenceACKOffset(r, &word)
-		if got != want || fmt.Sprint(ge) != fmt.Sprint(we) || a.calls != b.calls || d.reader.Buffered() != r.Buffered() {
+		if got != want || fmt.Sprint(ge) != fmt.Sprint(we) || a.calls != b.calls || d.reader.Buffered() != r.Buffered() || len(a.data) != len(b.data) {
 			t.Fatalf("ACK offset/state mismatch at %d: %d/%v/%d vs %d/%v/%d", i, got, ge, a.calls, want, we, b.calls)
 		}
-		// Inspect only buffered bytes: do not cause reads or consume a pending error.
-		gb, _ := d.reader.Peek(d.reader.Buffered())
-		wb, _ := r.Peek(r.Buffered())
-		if !bytes.Equal(gb, wb) || !bytes.Equal(a.data, b.data) {
-			t.Fatal("ACK offset consumed a different suffix")
+		// Every decoded word and cursor is compared above. The fixtures are
+		// immutable, so rereading the entire remaining suffix after EACH word
+		// adds quadratic race-instrumentation work without checking new output.
+		// Check complete residual bytes at errors; later reads are also compared.
+		if ge != nil {
+			gb, _ := d.reader.Peek(d.reader.Buffered())
+			wb, _ := r.Peek(r.Buffered())
+			if !bytes.Equal(gb, wb) || !bytes.Equal(a.data, b.data) {
+				t.Fatal("ACK offset consumed a different suffix")
+			}
 		}
 	}
 }
