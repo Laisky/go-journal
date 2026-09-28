@@ -15,7 +15,7 @@ jobs:
       GOTOOLCHAIN: local
       GOMAXPROCS: '4'
       BASELINE: 7a754e0786bf1de591f3c7cdee69ea5a8db04385
-      CANDIDATE_MODE: isolated
+      CANDIDATE_MODE: adopted
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -47,7 +47,7 @@ jobs:
             ref="$BASELINE"; if [ "$side" = candidate ]; then ref=HEAD; fi
             git worktree add --detach "$T" "$ref"
             cmp go.mod "$T/go.mod"; cmp go.sum "$T/go.sum"
-            cp ttl_lookup*.go "$T/"
+            cp ttl_lookup*.go ack_writer_budget_test.go "$T/"
             cp tests/e2eperf/*.go "$T/tests/e2eperf/"
             if [ "$side" = candidate ] && [ "$CANDIDATE_MODE" = isolated ]; then
               python3 tests/e2eperf/ttl_lookup_experiment.py --source "$T"
@@ -57,6 +57,16 @@ jobs:
             go version -m "$E/worker-$side" > "$E/build-$side.txt"
           done
           if [ "$CANDIDATE_MODE" = adopted ]; then test ! -s "$E/candidate.patch"; else test -s "$E/candidate.patch"; fi
+          python3 - <<'PYCODE' > "$E/matched-go-files.json"
+          import json, os, pathlib
+          root=pathlib.Path(os.environ['RUNNER_TEMP'])
+          before, after=root/'ttl-baseline', root/'ttl-candidate'
+          paths=sorted(str(p.relative_to(after)) for p in after.rglob('*.go'))
+          assert set(paths)=={str(p.relative_to(before)) for p in before.rglob('*.go')}
+          for name in paths:
+              if name!='set.go': assert (before/name).read_bytes()==(after/name).read_bytes(), name
+          print(json.dumps({'matched_except':'set.go','files':paths},indent=2))
+          PYCODE
       - name: Preserve TTL generation deadline concurrency and failure behavior
         shell: bash
         run: |

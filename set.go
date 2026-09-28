@@ -180,16 +180,15 @@ func (s *Int64SetWithTTL) AddInt64(id int64) {
 func (s *Int64SetWithTTL) CheckAndRemove(id int64) (ok bool) {
 	s.RLock()
 	defer s.RUnlock()
-	var (
-		t  = time.Now().UnixNano()
-		vi interface{}
-	)
+	var vi interface{}
 	if _, ok = s.ng.Load(id); ok {
 		// Logger.Debug("found in ng")
 		return true
 	}
 
 	if s.og != nil {
+		// Current-generation hits and misses without an old generation need no clock.
+		t := time.Now().UnixNano()
 		if vi, ok = s.og.Load(id); ok {
 			if vi.(int64) > t {
 				Logger.Debug("found in og")

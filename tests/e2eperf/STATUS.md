@@ -49,10 +49,18 @@ rotation allocation savings accompanied increased large-record GC/CPU. See
 [ACK_WRITER_BUDGET.md](ACK_WRITER_BUDGET.md) for complete evidence and limits.
 Production buffer sizes remain unchanged. The experiment is now manual-only.
 
-## Active TTL lookup experiment
+## Adopted TTL lookup optimization
 
-[TTL_LOOKUP.md](TTL_LOOKUP.md) tests deferring clock reads until a lookup needs
-old-generation expiry validation. Baseline remains `7a754e07`; no rejected buffer
-change is present. Inspect isolated public-API and full-lifecycle evidence before
-adopting, then replicate the checked-in head. Preserve all adverse observations
-and the existing p99 qualification rule.
+[TTL_LOOKUP.md](TTL_LOOKUP.md) records the isolated evidence and exact tested
+clock-only patch. Baseline is `7a754e07`; no rejected buffer change is present.
+Current-generation hits and misses with no old generation avoid an unnecessary
+timestamp. Old-generation expiration still reads the clock under the generation
+lock. Initial real-file replay batches improved around 20-24%, with allocation
+comparisons unchanged/inconclusive. Parallel and gzip timings were inconclusive.
+
+Full delivery-chain timing remains unqualified. Preserve the adverse sparse
+lifecycle median and post-A/A p99 flag in the original artifact. The current
+workflow measures checked-in HEAD with empty candidate.patch; its final verified
+head, evidence and any new regressions belong in the PR body, not inferred from
+the prototype. No API, buffer, dependency, Sync, deadline arithmetic or rotation
+change is part of this default. Earlier experiments remain linked above.
