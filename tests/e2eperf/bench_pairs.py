@@ -13,6 +13,7 @@ from report import paired_effect
 from supervised_exec import install_signal_handlers
 
 SUITES = {
+    'ack-writer': ('BenchmarkACKWriterResources', ['construct-plain', 'construct-gzip', 'construct-pair', 'write-plain']),
     'ack': ('BenchmarkPublicACKFrontier', ['plain-8k','plain-128k','plain-128k-segments','gzip-control']),
     'directory': ('BenchmarkPublicDirectorySnapshot', ['16','256','4096']),
 }
