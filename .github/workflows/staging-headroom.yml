@@ -1,0 +1,115 @@
+name: Staging framing slack
+on:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: journal-headroom-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  measured:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GOTOOLCHAIN: local
+      GOMAXPROCS: '4'
+      BASELINE: 1db7ba2d05c77781388e2117a321951bac2dbf26
+      CANDIDATE_MODE: isolated
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version: '1.27.1'
+      - name: Build exact baseline and explicit framing-slack candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          E="$RUNNER_TEMP/headroom-evidence"
+          mkdir -p "$E"
+          git rev-parse HEAD HEAD^{tree} > "$E/source.txt"
+          git archive --format=tar.gz HEAD > "$E/source.tar.gz"
+          git archive --format=tar.gz "$BASELINE" > "$E/baseline-source.tar.gz"
+          printf 'baseline=%s\ncandidate_mode=%s\n' "$BASELINE" "$CANDIDATE_MODE" > "$E/campaign.txt"
+          go version > "$E/toolchain.txt"
+          go env -json GOARCH GOOS GOEXPERIMENT CGO_ENABLED GOAMD64 > "$E/compiler-env.json"
+          cp go.mod go.sum "$E/"
+          go mod download
+          go mod verify > "$E/module-verify.txt"
+          for side in baseline candidate; do
+            T="$RUNNER_TEMP/headroom-$side"
+            ref=HEAD
+            if [ "$side" = baseline ]; then ref="$BASELINE"; fi
+            git worktree add --detach "$T" "$ref"
+            cmp go.mod "$T/go.mod"
+            cmp go.sum "$T/go.sum"
+            cp tests/e2eperf/*.go "$T/tests/e2eperf/"
+            if [ "$side" = candidate ] && [ "$CANDIDATE_MODE" = isolated ]; then
+              python3 tests/e2eperf/headroom_experiment.py --source "$T"
+              gofmt -w "$T/record_stage.go" "$T/record_stage_test.go"
+            fi
+            (cd "$T" && git diff -- record_stage.go record_stage_test.go > "$E/$side.patch" && go build -mod=readonly -trimpath -o "$E/worker-$side" ./tests/e2eperf)
+            go version -m "$E/worker-$side" > "$E/build-$side.txt"
+          done
+          if [ "$CANDIDATE_MODE" = adopted ]; then test ! -s "$E/candidate.patch"; else test -s "$E/candidate.patch"; fi
+      - name: Candidate native correctness race and rejection mutation
+        shell: bash
+        run: |
+          set -euo pipefail
+          E="$RUNNER_TEMP/headroom-evidence"
+          cd "$RUNNER_TEMP/headroom-candidate"
+          go vet -mod=readonly ./... > "$E/vet.txt" 2>&1
+          go test -mod=readonly -count=1 -json ./... > "$E/full.jsonl"
+          go test -mod=readonly -race -shuffle=on -count=3 -json ./... > "$E/race.jsonl"
+          python3 tests/e2eperf/staging_negative.py --out "$E/staging-negative" > "$E/staging-negative-summary.json"
+      - name: Bracket focused paired workloads with identical-binary controls
+        shell: bash
+        run: |
+          set -euo pipefail
+          E="$RUNNER_TEMP/headroom-evidence"
+          printf '%s\n' '[{"name":"same-small","count":256,"payload":1024,"writers":4,"ack_percent":50,"scans":0},{"name":"same-large","count":16,"payload":4194304,"writers":2,"ack_percent":0,"scans":1}]' > "$E/aa-cases.json"
+          python3 tests/e2eperf/compare.py --baseline "$E/worker-candidate" --candidate "$E/worker-candidate" --cases "$E/aa-cases.json" --pairs 5 --out "$E/aa-before" > "$E/aa-before-medians.json"
+          python3 tests/e2eperf/observe.py --out "$E/host-paired" -- python3 tests/e2eperf/compare.py --baseline "$E/worker-baseline" --candidate "$E/worker-candidate" --cases tests/e2eperf/headroom_cases.json --pairs 5 --out "$E/headroom-paired"
+          python3 tests/e2eperf/compare.py --baseline "$E/worker-candidate" --candidate "$E/worker-candidate" --cases "$E/aa-cases.json" --pairs 5 --out "$E/aa-after" > "$E/aa-after-medians.json"
+          python3 tests/e2eperf/qualify.py --before "$E/aa-before/report.json" --after "$E/aa-after/report.json" > "$E/timing-qualification.json"
+      - name: Separate fixed-work overflow trace and constructor controls
+        shell: bash
+        run: |
+          set -euo pipefail
+          E="$RUNNER_TEMP/headroom-evidence"
+          for side in baseline candidate; do
+            (cd "$RUNNER_TEMP/headroom-$side" && go test -mod=readonly -run '^$' -bench '^BenchmarkWriterPairConstruction$' -benchtime=64x -count=5 -benchmem > "$E/constructor-$side.txt")
+            python3 tests/e2eperf/run.py --binary "$E/worker-$side" --out "$E/$side-trace" --count 32 --payload 4194304 --writers 2 --ack-percent 0 --scans 0 --diagnostics trace > "$E/$side-trace.log"
+            for mode in seed transfer; do
+              go tool trace -pprof=syscall "$E/$side-trace/$mode/trace.out" > "$E/$side-$mode-syscall.pprof"
+              go tool pprof -raw "$E/$side-$mode-syscall.pprof" > "$E/$side-$mode-syscall-raw.txt"
+            done
+          done
+          git diff --exit-code -- go.mod go.sum
+      - name: Retain all evidence
+        if: always()
+        shell: bash
+        run: |
+          E="$RUNNER_TEMP/headroom-evidence"
+          mkdir -p "$E"
+          cd "$E"
+          find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
+      - name: Independently recompute all paired audits and assessments
+        shell: bash
+        run: |
+          set -euo pipefail
+          E="$RUNNER_TEMP/headroom-evidence"
+          python3 tests/e2eperf/verify.py --root "$E" --campaign headroom-paired=worker-baseline,worker-candidate --campaign aa-before=worker-candidate,worker-candidate --campaign aa-after=worker-candidate,worker-candidate > "$RUNNER_TEMP/headroom-verified.json"
+          cat "$RUNNER_TEMP/headroom-verified.json"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: journal-headroom-${{ github.event.pull_request.head.sha || github.sha }}
+          path: ${{ runner.temp }}/headroom-evidence
+          retention-days: 14
+          if-no-files-found: error
+          include-hidden-files: true
