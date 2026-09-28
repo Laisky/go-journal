@@ -16,6 +16,7 @@ jobs:
       GOMAXPROCS: '4'
       BASELINE: bab91ebc1119a7e6443726fe9c400902ddd6fbbb
       CANDIDATE_MODE: isolated
+      CONTIGUOUS: cb2536d723a4e3e6b4cc665b498c6bc63d1b1aba
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -35,6 +36,8 @@ jobs:
           git archive --format=tar.gz HEAD > "$E/source.tar.gz"
           git archive --format=tar.gz "$BASELINE" > "$E/baseline-source.tar.gz"
           printf 'baseline=%s\ncandidate_mode=%s\n' "$BASELINE" "$CANDIDATE_MODE" > "$E/campaign.txt"
+          git archive --format=tar.gz "$CONTIGUOUS" > "$E/contiguous-source.tar.gz"
+          printf 'contiguous=%s\n' "$CONTIGUOUS" >> "$E/campaign.txt"
           go version > "$E/toolchain.txt"
           go env -json GOARCH GOOS GOEXPERIMENT CGO_ENABLED GOAMD64 > "$E/compiler-env.json"
           python3 - <<'PY' > "$E/runtime-env.json"
@@ -63,6 +66,17 @@ jobs:
             go version -m "$E/worker-$side" > "$E/build-$side.txt"
           done
           if [ "$CANDIDATE_MODE" = adopted ]; then test ! -s "$E/candidate.patch"; else test -s "$E/candidate.patch"; fi
+          # Reconstruct the first measured prototype with its own helper/script,
+          # not the new segmented implementation. Only the external worker matches.
+          T="$RUNNER_TEMP/staging-contiguous"
+          git worktree add --detach "$T" "$CONTIGUOUS"
+          cmp go.mod "$T/go.mod"
+          cmp go.sum "$T/go.sum"
+          cp tests/e2eperf/*.go "$T/tests/e2eperf/"
+          python3 "$T/tests/e2eperf/staging_experiment.py" --source "$T"
+          gofmt -w "$T/serialize.go"
+          (cd "$T" && git diff -- serialize.go > "$E/contiguous.patch" && go build -mod=readonly -trimpath -o "$E/worker-contiguous" ./tests/e2eperf)
+          go version -m "$E/worker-contiguous" > "$E/build-contiguous.txt"
           sha256sum "$E"/worker-* tests/e2eperf/*.* record_stage*.go > "$E/build-hashes.txt"
       - name: Baseline boundaries and candidate behavior race fuzz mutations
         shell: bash
@@ -79,6 +93,7 @@ jobs:
           python3 tests/e2eperf/sync_experiment.py --source . --negative "$E/sync-negative" > "$E/sync-negative-summary.json"
           python3 tests/e2eperf/segment_negative.py --out "$E/segment-negative" > "$E/segment-negative-summary.json"
           python3 tests/e2eperf/ack_negative.py --out "$E/ack-negative" > "$E/ack-negative-summary.json"
+          python3 tests/e2eperf/staging_negative.py --out "$E/staging-negative" > "$E/staging-negative-summary.json"
           git diff --exit-code -- go.mod go.sum
       - name: Identical-binary control before the campaign
         shell: bash
@@ -93,6 +108,12 @@ jobs:
           set -euo pipefail
           E="$RUNNER_TEMP/staging-evidence"
           python3 tests/e2eperf/observe.py --out "$E/host-paired" -- python3 tests/e2eperf/compare.py --baseline "$E/worker-baseline" --candidate "$E/worker-candidate" --cases tests/e2eperf/staging_cases.json --pairs 5 --out "$E/staging-paired"
+      - name: Isolate segmented overflow against the contiguous prototype
+        shell: bash
+        run: |
+          set -euo pipefail
+          E="$RUNNER_TEMP/staging-evidence"
+          python3 tests/e2eperf/observe.py --out "$E/host-overflow" -- python3 tests/e2eperf/compare.py --baseline "$E/worker-contiguous" --candidate "$E/worker-candidate" --cases tests/e2eperf/staging_overflow_cases.json --pairs 5 --out "$E/overflow-paired"
       - name: Identical-binary control after and unchanged qualification
         shell: bash
         run: |
@@ -106,7 +127,7 @@ jobs:
           set -euo pipefail
           E="$RUNNER_TEMP/staging-evidence"
           for side in baseline candidate; do
-            (cd "$RUNNER_TEMP/staging-$side" && go test -mod=readonly -run '^$' -bench '^BenchmarkRecordStagingWrites$' -benchtime=64x -count=5 -benchmem > "$E/bench-$side.txt")
+            (cd "$RUNNER_TEMP/staging-$side" && go test -mod=readonly -run '^$' -bench '^(BenchmarkRecordStagingWrites|BenchmarkWriterPairConstruction)$' -benchtime=64x -count=5 -benchmem > "$E/bench-$side.txt")
             for kind in cpu trace; do
               python3 tests/e2eperf/run.py --binary "$E/worker-$side" --out "$E/$side-$kind" --count 256 --payload 262144 --writers 4 --ack-percent 0 --scans 0 --diagnostics "$kind" > "$E/$side-$kind.log"
             done
@@ -116,6 +137,10 @@ jobs:
               go tool pprof -top -nodecount=20 "$E/worker-$side" "$E/$side-cpu/$mode/cpu.pprof" > "$E/$side-$mode-cpu.txt"
               go tool trace -pprof=syscall "$E/$side-trace/$mode/trace.out" > "$E/$side-trace/$mode/syscall.pprof"
             done
+          done
+          for side in contiguous candidate; do
+            python3 tests/e2eperf/run.py --binary "$E/worker-$side" --out "$E/overflow-$side-cpu" --count 16 --payload 4194304 --writers 2 --ack-percent 0 --scans 0 --diagnostics cpu > "$E/overflow-$side-cpu.log"
+            go tool pprof -top -nodecount=20 -sample_index=alloc_space -base="$E/overflow-$side-cpu/seed/alloc-before.pprof" "$E/worker-$side" "$E/overflow-$side-cpu/seed/alloc.pprof" > "$E/overflow-$side-alloc.txt"
           done
           cat "$E/baseline-seed-alloc.txt" "$E/candidate-seed-alloc.txt"
       - name: Retain evidence hashes even after failure
@@ -133,6 +158,7 @@ jobs:
           E="$RUNNER_TEMP/staging-evidence"
           python3 tests/e2eperf/verify.py --root "$E" \
             --campaign staging-paired=worker-baseline,worker-candidate \
+            --campaign overflow-paired=worker-contiguous,worker-candidate \
             --campaign aa-before=worker-candidate,worker-candidate \
             --campaign aa-after=worker-candidate,worker-candidate > "$RUNNER_TEMP/verified-staging.json"
           cat "$RUNNER_TEMP/verified-staging.json"

@@ -20,6 +20,7 @@ def transform(source):
         ('\tdefer func() {\n\t\tif enc.record.Cap() > maxRetainedRecordBuffer {\n\t\t\tenc.record = bytes.Buffer{}\n\t\t} else {\n\t\t\tenc.record.Reset()\n\t\t}\n\t}()',
          '\t// Always discard oversized spill storage, including after encoding errors.\n\tdefer enc.record.Reset()'),
         ('enc.record = bytes.Buffer{}', 'enc.record = recordStage{}'),
+        ('enc.writer.Write(enc.record.Bytes())', 'enc.record.appendTo(enc.writer)'),
     ]
     for old, new in pairs:
         if source.count(old) != 1:
