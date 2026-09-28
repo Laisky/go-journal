@@ -129,7 +129,7 @@ class Peer:
             daemon_threads = True
             request_queue_size = 256
         self.server = Server(('127.0.0.1', 0), Handler)
-        self.thread = threading.Thread(target=self.server.server.serve_forever, daemon=True)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
         self.url = 'http://127.0.0.1:' + str(self.server.server_port)
 

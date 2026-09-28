@@ -183,3 +183,22 @@ CI includes hidden synthetic files so SHA256SUMS can be checked completely.
 Artifacts retain sources, executables, module graph, profiles and observations
 for fourteen days. Preserve a verified copy. Passing CI means the campaign and
 correctness checks completed, not that every performance metric improved.
+
+
+## Worker observation and metric continuity
+
+The controller now reacts to checkpoint stdout and Linux process-exit notifications
+without waiting for the 20 ms resource-sampling tick. This is a **harness change**,
+not a journal optimization. New trial options/summaries identify `events-v1` and
+the actual `pidfd` or `pipe-poll` backend; mixed methods/backends are rejected by
+paired reporting. Use one frozen current harness against both library versions.
+Do not compare old poll-based lifecycle numbers directly with new event-based ones.
+
+`worker_phase_seconds` sums the Go-reported phases of seed, transfer, deliver and
+verify, exactly the stages included by `lifecycle_seconds`; the standalone scan
+stage remains separate. `outside_phase_seconds` is their difference, including
+interpreter/process startup, uninstrumented initialization, resource snapshots,
+result serialization and shutdown/observation. It is **not all removable overhead**,
+nor an estimate of fsync cost. Worker-internal p99 and profiling code are unchanged.
+
+See [observer implementation, measurements and validation limits](OBSERVER_RESULTS.md).

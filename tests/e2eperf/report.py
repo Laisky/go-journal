@@ -67,6 +67,11 @@ def analyze(report):
     output = {}
     for case in cases:
         raw = [[groups[(case, i, side)] for i in range(count)] for side in ('baseline', 'candidate')]
+        if len({s.get('measurement_method', 'poll-v1') for side in raw for s in side}) != 1:
+            raise ValueError('different observation methods; not a library performance comparison')
+        backends = [tuple(s.get('observer_backends', ['poll-v1'])) for side in raw for s in side]
+        if any(len(b) != 1 for b in backends) or len(set(backends)) != 1:
+            raise ValueError('mixed observation backends; timing is not comparable')
         if len({s['count'] for side in raw for s in side}) != 1:
             raise ValueError('different record counts')
         work = [{name: p['ops'] for name, p in s['phases'].items()} for side in raw for s in side]

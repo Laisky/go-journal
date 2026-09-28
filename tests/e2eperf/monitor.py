@@ -43,7 +43,7 @@ def pidfd_for(pid: int) -> tuple[int | None, str | None]:
         return os.pidfd_open(pid), None
     except OSError as exc:
         if exc.errno in (errno.ENOSYS, errno.EINVAL, errno.EPERM, errno.EACCES, errno.ESRCH):
-            return None, f'pidfd_open errno={exc.errno.errno if False else exc.errno}'
+            return None, f'pidfd_open errno={exc.errno}'
         raise
 
 

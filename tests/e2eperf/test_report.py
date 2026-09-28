@@ -22,6 +22,19 @@ class ReportTest(unittest.TestCase):
         self.assertEqual(paired_effect([0]*5, [1]*5)['status'], 'zero-baseline')
         self.assertEqual(analyze(campaign())['plain']['lifecycle_seconds']['status'], 'inconclusive')
 
+    def test_mixed_observation_methods_cannot_claim_library_improvement(self):
+        report = campaign()
+        report['trials'][0]['summary']['measurement_method'] = 'events-v1'
+        with self.assertRaisesRegex(ValueError, 'different observation methods'):
+            analyze(report)
+
+    def test_mixed_backends_are_not_comparable(self):
+        for backends in (['pidfd'], ['pidfd', 'pipe-poll']):
+            report = campaign()
+            report['trials'][0]['summary']['observer_backends'] = backends
+            with self.assertRaisesRegex(ValueError, 'mixed observation backends'):
+                analyze(report)
+
     def test_invalid_numbers(self):
         for value in (-1, float('nan'), float('inf'), True):
             with self.assertRaises(ValueError):

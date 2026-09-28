@@ -1,0 +1,79 @@
+name: E2E observer contracts
+on:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: journal-observer-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  observe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GOTOOLCHAIN: local
+      GOMAXPROCS: '4'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version: '1.27.1'
+      - name: Exact-source build and observer regression tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          E="$RUNNER_TEMP/observer-evidence"
+          mkdir -p "$E"
+          git rev-parse HEAD HEAD^{tree} > "$E/source.txt"
+          git archive --format=tar.gz HEAD > "$E/source.tar.gz"
+          go version > "$E/toolchain.txt"
+          python3 --version > "$E/python.txt"
+          cp go.mod go.sum "$E/"
+          go mod download
+          go mod verify > "$E/module-verify.txt"
+          go build -mod=readonly -trimpath -o "$E/worker" ./tests/e2eperf
+          go version -m "$E/worker" > "$E/build.txt"
+          python3 -m unittest discover -s tests/e2eperf -p 'test_*.py' -v > "$E/tests.txt" 2>&1
+          python3 -S tests/e2eperf/monitor_bench.py --pairs 20 --out "$E/notifications-before" > "$E/notifications-before.txt"
+      - name: Native six-case lifecycle and separate profiles
+        shell: bash
+        run: |
+          set -euo pipefail
+          E="$RUNNER_TEMP/observer-evidence"
+          for codec in plain gzip; do
+            flags=()
+            if [ "$codec" = gzip ]; then flags=(--gzip); fi
+            for ack in 0 50 100; do
+              out="$E/$codec-$ack"
+              python3 tests/e2eperf/run.py --binary "$E/worker" --out "$out" --count 128 --payload 512 --writers 16 --ack-percent "$ack" --scans 2 --rotate-every 32 "${flags[@]}" > "$out.log"
+              python3 tests/e2eperf/run.py --audit-only "$out" > "$out.audit.json"
+            done
+          done
+          for kind in cpu trace contention; do
+            python3 tests/e2eperf/run.py --binary "$E/worker" --out "$E/diagnostic-$kind" --count 128 --payload 1024 --writers 16 --ack-percent 50 --scans 2 --diagnostics "$kind" > "$E/diagnostic-$kind.log"
+            python3 tests/e2eperf/run.py --audit-only "$E/diagnostic-$kind" > "$E/diagnostic-$kind.audit.json"
+          done
+          go tool pprof -top "$E/worker" "$E/diagnostic-cpu/seed/cpu.pprof" > "$E/seed-cpu.txt"
+          go tool trace -pprof=syscall "$E/diagnostic-trace/seed/trace.out" > "$E/seed-syscall.pprof"
+          python3 -S tests/e2eperf/monitor_bench.py --pairs 20 --out "$E/notifications-after" > "$E/notifications-after.txt"
+          git diff --exit-code -- go.mod go.sum
+      - name: Retain failed and successful evidence
+        if: always()
+        shell: bash
+        run: |
+          E="$RUNNER_TEMP/observer-evidence"
+          mkdir -p "$E"
+          cd "$E"
+          find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: journal-observer-${{ github.event.pull_request.head.sha || github.sha }}
+          path: ${{ runner.temp }}/observer-evidence
+          retention-days: 14
+          if-no-files-found: error
+          include-hidden-files: true

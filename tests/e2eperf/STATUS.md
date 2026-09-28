@@ -27,7 +27,7 @@ available local runtime had no earlier journal worktree or live load process.
 Recovered archives remain immutable; experimental GitHub runner worktrees are
 isolated from the PR branch. Unrelated historical branches were not deleted.
 
-## Current implemented iteration
+## Previous implemented iteration: ACK readers
 
 Incremental baseline: `71790780de0b665e1c33b2583c424fcc770944b2`.
 ACK-reader reuse is integrated in maximum-ID scanning, replay ACK-snapshot loading
@@ -51,6 +51,21 @@ requires an empty candidate patch, tests the actual checked-in implementation,
 and repeats the frozen ACK/segment cases and before/after A/A controls.
 The PR body names that exact final run, head, artifact and verification result;
 an isolated prototype's success is not substituted for exact-head validation.
+
+## Current iteration: recovered event-driven observation
+
+The unpushed observer patch is now reconciled with accepted head `9acb3825`.
+ACK/data reader reuse and all production code remain unchanged. See
+[OBSERVER_RESULTS.md](OBSERVER_RESULTS.md) for event-based checkpoint/exit
+handling, metric continuity, strict per-process auditing and reproduction.
+New and legacy observer measurements cannot be mixed in library comparisons.
+
+The dedicated observer workflow measures synthetic notification overhead and
+runs real native lifecycle/profile controls. The existing main campaign retains
+its ACK baseline and full correctness/resource/qualification checks. The PR body
+is the final exact-head CI/evidence record; do not promote a pending or historical
+run into current acceptance. These are controller improvements, not new claims
+about journal throughput or the cause of all p99 variability.
 
 ## Remaining limits and next decisions
 
