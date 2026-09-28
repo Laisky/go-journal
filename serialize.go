@@ -349,6 +349,14 @@ func (enc *IdsEncoder) Close() (err error) {
 // readOffset preserves EOF versus partial-record errors without allocating a
 // temporary byte slice for every acknowledgement.
 func (dec *IdsDecoder) readOffset() (int64, error) {
+	if dec.reader.Buffered() >= len(dec.word) {
+		// Both operations stay within Buffered: no I/O or pending-error change.
+		// Consume before returning to a potentially reentrant set callback.
+		p, _ := dec.reader.Peek(len(dec.word))
+		id := int64(bitOrder.Uint64(p))
+		_, _ = dec.reader.Discard(len(dec.word))
+		return id, nil
+	}
 	if _, err := io.ReadFull(dec.reader, dec.word[:]); err != nil {
 		return 0, err
 	}

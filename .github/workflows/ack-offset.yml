@@ -15,7 +15,7 @@ jobs:
       GOTOOLCHAIN: local
       GOMAXPROCS: '4'
       BASELINE: c013e4b87458da53950c7b530726d29f035bfe35
-      CANDIDATE_MODE: isolated
+      CANDIDATE_MODE: adopted
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
