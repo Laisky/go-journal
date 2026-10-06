@@ -1,0 +1,71 @@
+name: Retained journal directory contracts
+on:
+  pull_request:
+    branches: [master]
+  push:
+    branches: [master]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    env:
+      GOTOOLCHAIN: local
+      GOMAXPROCS: '4'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version: '1.27.1'
+      - name: Native build, behavior, and race acceptance
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          go version | tee evidence/toolchain.txt
+          git rev-parse HEAD HEAD^{tree} > evidence/source.txt
+          go mod verify
+          go build -mod=readonly ./...
+          go vet -mod=readonly ./...
+          go test -mod=readonly -json -count=1 -timeout=180s ./... | tee evidence/full.jsonl
+          go test -mod=readonly -json -race -count=3 -shuffle=on -timeout=180s ./... | tee evidence/race.jsonl
+          git diff --exit-code -- go.mod go.sum
+      - name: Require original-path assertion failures, not build errors
+        shell: bash
+        run: |
+          set -euo pipefail
+          git worktree add --detach "$RUNNER_TEMP/root-baseline" ad049272dbeafca55f2e0a987942504ab127d3c0
+          cp rooted_regression_test.go "$RUNNER_TEMP/root-baseline/"
+          set +e
+          (cd "$RUNNER_TEMP/root-baseline"; go test -mod=readonly -json -count=1 -timeout=90s -run 'TestRegressionJournal|TestJournalRootLockInteroperates' .) > evidence/baseline.jsonl 2>&1
+          result=$?
+          set -e
+          test "$result" -ne 0
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          events = [json.loads(s) for s in Path('evidence/baseline.jsonl').read_text().splitlines() if s.startswith('{')]
+          for test in ('TestRegressionJournalRotationStaysWithOpenedDirectory', 'TestRegressionJournalPrivateSegmentModes'):
+              assert any(e.get('Test') == test and e.get('Action') == 'fail' for e in events), test
+          assert any(e.get('Test') == 'TestJournalRootLockInteroperatesWithExistingBackend' and e.get('Action') == 'pass' for e in events)
+          output = ''.join(e.get('Output', '') for e in events)
+          assert 'JOURNAL_ROOT_REGRESSION' in output and 'JOURNAL_MODE_REGRESSION' in output
+          assert not any(e.get('Action') == 'skip' for e in events)
+          PY
+      - name: Preserve native results, including failures
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: rooted-directory-${{ matrix.os }}-${{ github.sha }}
+          path: evidence/
+          retention-days: 14
+          if-no-files-found: error
