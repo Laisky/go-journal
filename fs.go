@@ -11,7 +11,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	utils "github.com/Laisky/go-utils"
@@ -37,9 +36,6 @@ func isFileGZ(fname string) bool {
 
 // PrepareDir `mkdir -p`
 func PrepareDir(path string) error {
-	ou := syscall.Umask(0)
-	defer syscall.Umask(ou)
-
 	info, err := os.Stat(path)
 	if os.IsNotExist(err) {
 		if err = os.MkdirAll(path, DirMode); err != nil {
@@ -71,6 +67,10 @@ type bufFileStat struct {
 //
 // * if `isScan=false`, keep old buf files, directly generate new file without scan directory.
 func PrepareNewBufFile(dirPath string, oldFsStat *bufFileStat, isScan, isGz bool, sizeBytes int64) (fsStat *bufFileStat, err error) {
+	return prepareNewBufFile(pathFS{}, dirPath, oldFsStat, isScan, isGz, sizeBytes)
+}
+
+func prepareNewBufFile(disk journalFS, dirPath string, oldFsStat *bufFileStat, isScan, isGz bool, sizeBytes int64) (fsStat *bufFileStat, err error) {
 	logger := Logger.With(
 		zap.String("dirpath", dirPath),
 		zap.Bool("is_scan", isScan),
@@ -90,7 +90,7 @@ func PrepareNewBufFile(dirPath string, oldFsStat *bufFileStat, isScan, isGz bool
 	// scan existing buf files.
 	// update legacyLoader or first run.
 	if isScan || oldFsStat == nil {
-		if fs, err = os.ReadDir(dirPath); err != nil {
+		if fs, err = disk.ReadDir(dirPath); err != nil {
 			return nil, errors.Wrapf(err, "read files in dir `%s`", dirPath)
 		}
 
@@ -99,7 +99,7 @@ func PrepareNewBufFile(dirPath string, oldFsStat *bufFileStat, isScan, isGz bool
 			absFname = path.Join(dirPath, fname)
 
 			// macos fs bug, could get removed files
-			if _, err := os.Stat(absFname); err != nil {
+			if _, err := disk.Stat(absFname); err != nil {
 				logger.Warn("file not exists", zap.String("fname", fname))
 				return nil, errors.Wrap(err, "stat journal directory entry")
 			}
@@ -161,13 +161,13 @@ func PrepareNewBufFile(dirPath string, oldFsStat *bufFileStat, isScan, isGz bool
 		latestIDsFName = appendGzSuffix(latestIDsFName)
 	}
 
-	if fsStat.NewDataFp, err = createBufFile(filepath.Join(dirPath, latestDataFName), sizeBytes/2); err != nil {
+	if fsStat.NewDataFp, err = createBufFile(filepath.Join(dirPath, latestDataFName), sizeBytes/2, disk); err != nil {
 		return nil, err
 	}
 
-	if fsStat.NewIDsFp, err = createBufFile(filepath.Join(dirPath, latestIDsFName), 0); err != nil {
+	if fsStat.NewIDsFp, err = createBufFile(filepath.Join(dirPath, latestIDsFName), 0, disk); err != nil {
 		fsStat.NewDataFp.Close()
-		os.Remove(fsStat.NewDataFp.Name())
+		disk.Remove(fsStat.NewDataFp.Name())
 		return nil, err
 	}
 
@@ -234,15 +234,16 @@ func GenerateNewBufFName(now time.Time, oldFName string) (string, error) {
 
 // Internal rotations must never reopen and overwrite an existing segment.
 // The public OpenBufFile helper retains its existing open-or-create behavior.
-func createBufFile(name string, preallocateBytes int64) (*os.File, error) {
-	fp, err := os.OpenFile(name, os.O_RDWR|os.O_CREATE|os.O_EXCL, FileMode)
+func createBufFile(name string, preallocateBytes int64, optional ...journalFS) (*os.File, error) {
+	disk := filesystem(optional...)
+	fp, err := disk.OpenFile(name, os.O_RDWR|os.O_CREATE|os.O_EXCL, FileMode)
 	if err != nil {
 		return nil, errors.Wrap(err, "create journal segment")
 	}
 	if preallocateBytes > 0 {
 		if err := fileutil.Preallocate(fp, preallocateBytes, false); err != nil {
 			fp.Close()
-			os.Remove(name)
+			disk.Remove(name)
 			return nil, errors.Wrap(err, "preallocate journal segment")
 		}
 	}

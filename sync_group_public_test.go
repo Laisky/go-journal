@@ -153,7 +153,7 @@ func TestSyncGroupCrashAfterIndividualBarriers(t *testing.T) {
 	}
 }
 
-func TestSyncGroupDirectoryErrorIsNotCachedSuccess(t *testing.T) {
+func TestSyncGroupDirectoryRenamePreservesDurability(t *testing.T) {
 	dir := t.TempDir()
 	j := behaviorStart(t, dir, false)
 	behaviorCheck(t, j.WriteData(behaviorData(1)))
@@ -170,8 +170,8 @@ func TestSyncGroupDirectoryErrorIsNotCachedSuccess(t *testing.T) {
 	for i := 0; i < 32; i++ {
 		select {
 		case err := <-results:
-			if err == nil {
-				t.Fatal("unavailable directory reported durable success")
+			if err != nil {
+				t.Fatalf("renamed owned directory lost its barrier: %v", err)
 			}
 		case <-time.After(5 * time.Second):
 			t.Fatal("failed barrier did not release callers")

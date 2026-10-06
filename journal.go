@@ -10,7 +10,6 @@ import (
 
 	utils "github.com/Laisky/go-utils"
 	"github.com/Laisky/zap"
-	"github.com/coreos/etcd/pkg/fileutil"
 	"github.com/pkg/errors"
 )
 
@@ -36,7 +35,9 @@ type Journal struct {
 	lifecycleMu   sync.Mutex
 	workers       sync.WaitGroup
 	started       bool
-	dirLock       *fileutil.LockedFile
+	dirLock       *os.File
+	ownedRoot     *os.Root
+	disk          journalFS
 	legacyLock    *utils.Mutex
 	dataFp, idsFp *os.File // current writting journal file
 	fsStat        *bufFileStat
@@ -59,6 +60,16 @@ func NewJournal(opts ...OptionFunc) (j *Journal, err error) {
 		if err = optf(j.option); err != nil {
 			return nil, err
 		}
+	}
+
+	if j.root != nil {
+		j.ownedRoot, err = j.root.OpenRoot(".")
+		if err != nil {
+			return nil, errors.Wrap(err, "duplicate journal directory")
+		}
+		j.bufDirPath = filepath.Clean(j.ownedRoot.Name())
+		j.disk = rootedFS{root: j.ownedRoot}
+		j.root = nil // Do not keep the caller's borrowed handle.
 	}
 
 	j.logger.Info("new journal",
@@ -90,7 +101,22 @@ func (j *Journal) Start(ctx context.Context) (err error) {
 	}
 	// A directory is a single WAL ownership domain. Keep the lock inode after
 	// Close: unlinking it would let a third opener bypass an existing owner.
-	lock, err := fileutil.TryLockFile(filepath.Join(j.bufDirPath, ".journal.lock"), os.O_CREATE|os.O_RDWR, 0600)
+	if j.ownedRoot == nil {
+		root, err := os.OpenRoot(j.bufDirPath)
+		if err != nil {
+			return errors.Wrap(err, "open journal directory")
+		}
+		j.ownedRoot = root
+		j.bufDirPath = filepath.Clean(root.Name())
+		j.disk = rootedFS{root: root}
+	}
+	lock, err := j.disk.OpenFile(filepath.Join(j.bufDirPath, ".journal.lock"), os.O_CREATE|os.O_RDWR, 0600)
+	if err == nil {
+		err = lockJournalFile(lock)
+		if err != nil {
+			lock.Close()
+		}
+	}
 	if err != nil {
 		return errors.Wrap(err, "lock journal directory")
 	}
@@ -146,16 +172,15 @@ func (j *Journal) Close() {
 			j.dirLock.Close()
 			j.dirLock = nil
 		}
+		if j.ownedRoot != nil {
+			j.ownedRoot.Close()
+		}
 
 	})
 }
 
 // initBufDir initialize buf directory and create buf files
 func (j *Journal) initBufDir(ctx context.Context) (err error) {
-	if err = fileutil.IsDirWriteable(j.bufDirPath); err != nil {
-		return errors.Wrapf(err, "cannot write to `%s`", j.bufDirPath)
-	}
-
 	if err = j.Rotate(ctx); err != nil { // manually first run
 		return errors.Wrapf(err, "init rotate in `%s`", j.bufDirPath)
 	}
@@ -368,7 +393,7 @@ func (j *Journal) Rotate(ctx context.Context) error {
 	} else if j.legacy == nil {
 		return ErrDuringRotate
 	}
-	next, err := PrepareNewBufFile(j.bufDirPath, j.fsStat, scan, j.isCompress, j.bufSizeBytes)
+	next, err := prepareNewBufFile(j.disk, j.bufDirPath, j.fsStat, scan, j.isCompress, j.bufSizeBytes)
 	if err != nil {
 		return errors.Wrap(err, "prepare new journal files")
 	}
@@ -377,8 +402,8 @@ func (j *Journal) Rotate(ctx context.Context) error {
 		if !installed {
 			next.NewDataFp.Close()
 			next.NewIDsFp.Close()
-			os.Remove(next.NewDataFp.Name())
-			os.Remove(next.NewIDsFp.Name())
+			j.disk.Remove(next.NewDataFp.Name())
+			j.disk.Remove(next.NewIDsFp.Name())
 		}
 	}()
 	dataEnc, err := NewDataEncoder(next.NewDataFp, j.isCompress)
@@ -431,6 +456,7 @@ func (j *Journal) refreshLegacyLoader(ctx context.Context) {
 			j.isCompress,
 			j.committedIDTTL,
 		)
+		j.legacy.disk = j.disk
 	} else {
 		j.legacy.Reset(j.fsStat.OldDataFnames, j.fsStat.OldIDsDataFnames)
 		if j.isAggresiveGC {
@@ -559,7 +585,7 @@ func (j *Journal) syncLocked() error {
 		}
 	}
 	if j.dataFp != nil || j.idsFp != nil {
-		dir, err := os.Open(j.bufDirPath)
+		dir, err := j.disk.Open(j.bufDirPath)
 		if err != nil {
 			return errors.Wrap(err, "open journal directory for sync")
 		}
