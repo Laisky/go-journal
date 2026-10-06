@@ -1,0 +1,82 @@
+name: Verify private creation modes
+on:
+  push:
+    branches: [codex/private-modes-workspace-20261006]
+    paths: [.github/workflows/private-modes-publish.yml]
+permissions:
+  contents: write
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version: '1.27.1'
+      - name: Require baseline permission failures and evidence positive control
+        run: |
+          set -euo pipefail
+          mkdir /tmp/private-evidence
+          cp permissions_regression_test.go /tmp/private-evidence/
+          git checkout --detach ad049272dbeafca55f2e0a987942504ab127d3c0
+          cp /tmp/private-evidence/permissions_regression_test.go .
+          gofmt -w permissions_regression_test.go
+          go test -mod=readonly -count=1 -run '^TestPermissionPolicyNeverChmodsExistingEvidence$' .
+          set +e
+          go test -mod=readonly -count=1 -run '^TestRegressionPrivateSegmentCreation$' -json . > /tmp/private-evidence/red.json 2>&1
+          code=$?
+          set -e
+          test "$code" = 1
+          python - <<'PY'
+          import json,pathlib
+          events=[json.loads(l) for l in pathlib.Path('/tmp/private-evidence/red.json').read_text().splitlines() if l.startswith('{')]
+          for mask in ('0000','0022','0077'):
+              test='TestRegressionPrivateSegmentCreation/'+mask
+              assert any(e.get('Test')==test and e.get('Action')=='fail' for e in events),mask
+              assert any(e.get('Test')==test and 'PRIVATE_MODE_REGRESSION:' in e.get('Output','') for e in events),mask
+          PY
+      - name: Apply exact minimal production change
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import hashlib
+          for name,before,after in [('const.go','159382c534f38bca3b9ecac9ca5dd7af570f9616df2e4fcffc56c26c5436bb10','d6fa96f3cebc942a97a4c6f0d4b8797d88c90b04723ff59a55bccf789bcf77f2'),('fs.go','5c86dcc3ae3b4536f8c8f1c59513a3950e552c60b977fb792ff9b71a07d39efb','db23d3009309e8327c67d18395aadfee852ac2f3a0adc8ac5a85696c5ca29f57')]:
+              p=Path(name);s=p.read_text();assert hashlib.sha256(s.encode()).hexdigest()==before
+              if name=='const.go':
+                  s=s.replace('FileMode os.FileMode = 0664','FileMode os.FileMode = 0600').replace('os.FileMode(0775)','os.FileMode(0700)').replace('// FileMode default file mode','// FileMode requests private creation; the process umask can further restrict it.').replace('// DirMode default directory mode','// DirMode requests private directory creation without changing the umask.')
+              else:
+                  s=s.replace('\t"syscall"\n','').replace('\tou := syscall.Umask(0)\n\tdefer syscall.Umask(ou)\n\n','')
+              assert hashlib.sha256(s.encode()).hexdigest()==after
+              p.write_text(s)
+          PY
+      - name: Native complete acceptance including README consumers
+        run: |
+          set -euo pipefail
+          go mod verify
+          go build -mod=readonly ./...
+          go vet -mod=readonly ./...
+          go test -mod=readonly -count=1 -timeout=180s ./... | tee /tmp/private-evidence/full.log
+          go test -mod=readonly -race -count=3 -shuffle=on -timeout=180s ./... | tee /tmp/private-evidence/race.log
+          git diff --exit-code -- go.mod go.sum
+          git diff --check
+      - name: Publish minimal accepted source only
+        run: |
+          set -euo pipefail
+          git config user.name 'Laisky.Cai'
+          git config user.email 'github@laisky.com'
+          git add const.go fs.go permissions_regression_test.go
+          git commit -m 'fix: create private journal files without changing process umask'
+          git rev-parse HEAD HEAD^{tree} | tee /tmp/private-evidence/source.txt
+          git archive HEAD | gzip > /tmp/private-evidence/source.tar.gz
+          git push origin HEAD:refs/heads/codex/private-segment-modes-20261006
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: private-modes-red-green-evidence
+          path: /tmp/private-evidence
+          retention-days: 14
+          if-no-files-found: error
