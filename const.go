@@ -5,9 +5,9 @@ import (
 )
 
 const (
-	// FileMode default file mode
+	// FileMode requests private creation; the process umask can further restrict it.
 	FileMode os.FileMode = 0600
-	// DirMode default directory mode
+	// DirMode requests private directory creation without changing the umask.
 	DirMode = os.FileMode(0700) | os.ModeDir
 
 	// BufSize default buf file size
