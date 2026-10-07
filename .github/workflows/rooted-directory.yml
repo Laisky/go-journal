@@ -21,6 +21,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
@@ -38,12 +39,13 @@ jobs:
           go vet -mod=readonly ./...
           go test -mod=readonly -json -count=1 -timeout=180s ./... | tee evidence/full.jsonl
           go test -mod=readonly -json -race -count=3 -shuffle=on -timeout=180s ./... | tee evidence/race.jsonl
+          go test -mod=readonly -run '^$' -bench '^BenchmarkJournalFilesystemOpen$' -benchmem -count=3 . | tee evidence/filesystem-bench.txt
           git diff --exit-code -- go.mod go.sum
       - name: Require original-path assertion failures, not build errors
         shell: bash
         run: |
           set -euo pipefail
-          git worktree add --detach "$RUNNER_TEMP/root-baseline" ad049272dbeafca55f2e0a987942504ab127d3c0
+          git worktree add --detach "$RUNNER_TEMP/root-baseline" a7f7377c4a3dfe3e76244412c082e1e76e121b44
           cp rooted_regression_test.go "$RUNNER_TEMP/root-baseline/"
           set +e
           (cd "$RUNNER_TEMP/root-baseline"; go test -mod=readonly -json -count=1 -timeout=90s -run 'TestRegressionJournal|TestJournalRootLockInteroperates' .) > evidence/baseline.jsonl 2>&1
@@ -54,11 +56,39 @@ jobs:
           import json
           from pathlib import Path
           events = [json.loads(s) for s in Path('evidence/baseline.jsonl').read_text().splitlines() if s.startswith('{')]
-          for test in ('TestRegressionJournalRotationStaysWithOpenedDirectory', 'TestRegressionJournalPrivateSegmentModes'):
+          for test in ('TestRegressionJournalRotationStaysWithOpenedDirectory',):
               assert any(e.get('Test') == test and e.get('Action') == 'fail' for e in events), test
           assert any(e.get('Test') == 'TestJournalRootLockInteroperatesWithExistingBackend' and e.get('Action') == 'pass' for e in events)
           output = ''.join(e.get('Output', '') for e in events)
-          assert 'JOURNAL_ROOT_REGRESSION' in output and 'JOURNAL_MODE_REGRESSION' in output
+          assert 'JOURNAL_ROOT_REGRESSION' in output
+          assert not any(e.get('Action') == 'skip' for e in events)
+          PY
+      - name: Require interrupted-tail failures on the original rooted implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+          git worktree add --detach "$RUNNER_TEMP/root-recovery-baseline" b6c45ccdaae6d4e49b17c0c929895dbff72a607f
+          cp rooted_recovery_test.go "$RUNNER_TEMP/root-recovery-baseline/"
+          set +e
+          (cd "$RUNNER_TEMP/root-recovery-baseline"; go test -mod=readonly -json -count=1 -timeout=90s -run '^TestJournalRootInterruptedEvidenceAfterDirectoryReplacement$' .) > evidence/recovery-baseline.jsonl 2>&1
+          result=$?
+          set -e
+          test "$result" -ne 0
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          events = [json.loads(s) for s in Path('evidence/recovery-baseline.jsonl').read_text().splitlines() if s.startswith('{')]
+          parent = 'TestJournalRootInterruptedEvidenceAfterDirectoryReplacement'
+          for config in ('path-dot', 'borrowed'):
+              for gzip in ('false', 'true'):
+                  test = f'{parent}/config={config}/gzip={gzip}/corrupt=false'
+                  assert any(e.get('Test') == test and e.get('Action') == 'fail' for e in events), test
+          for config in ('path', 'path-dot', 'borrowed'):
+              for gzip in ('false', 'true'):
+                  test = f'{parent}/config={config}/gzip={gzip}/corrupt=true'
+                  assert any(e.get('Test') == test and e.get('Action') == 'pass' for e in events), test
+          output = ''.join(e.get('Output', '') for e in events)
+          assert 'tail leaked: load legacy data: read legacy data: unexpected EOF' in output
           assert not any(e.get('Action') == 'skip' for e in events)
           PY
       - name: Preserve native results, including failures

@@ -171,7 +171,10 @@ READ_NEW_FILE:
 READ_NEW_LINE:
 	var acknowledged bool
 	if acknowledged, err = l.decoder.readWithAcknowledgement(data, l.ids.CheckAndRemove); err != nil {
-		if err != io.EOF && l.newestDataName() == l.dataFp.Name() && incompleteRecord(err) {
+		// Compare names from the same scan snapshot. Root.Open preserves its
+		// diagnostic label (including "/." on a duplicated root), whereas
+		// the journal's scanned names are clean paths.
+		if err != io.EOF && l.newestDataName() == l.dataFNames[l.dataFileIdx] && incompleteRecord(err) {
 			if preserveErr := preserveIncomplete(l.dataFp.Name(), l.disk); preserveErr != nil {
 				return preserveErr
 			}

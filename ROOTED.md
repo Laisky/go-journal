@@ -35,17 +35,34 @@ this library does not rename, delete or silently tighten historical data.
 
 ## Regression evidence
 
-Two bounded public regressions fail on ad049272dbea: ordinary and gzip rotation
-create two files in the replacement symlink target, and new segments have 0644
-under umask 0022. The same tests pass with retained roots/private creation.
+The rotation regression still fails on a7f7377c4a3dfe3e76244412c082e1e76e121b44,
+after the private-creation fix in PR #12: ordinary and gzip rotation create files
+in a replacement symlink target. Retained roots keep those files in the original
+directory. PR #12 supplies the private-creation production changes and umask
+regressions; this refactor reuses them.
+
 Additional tests cover borrowed-root lifetime and replacement before Start,
 old/new lock exclusion in both directions (flock and OFD on Linux), plain/gzip
 replay and ACKs across rename/reopen, byte-identical incomplete evidence and
-corruption refusal after replacement, neutral/restrictive umask subprocesses,
-closed-root cleanup, concurrent barrier error propagation and retry.
+corruption refusal after replacement, closed-root cleanup, concurrent barrier
+error propagation and retry. Interrupted-tail replay is checked with clean path
+labels, labels ending in /., and borrowed roots. Replay compares names from the
+scan snapshot because a duplicated Root preserves /. in opened File.Name labels.
 
 Directory rename no longer simulates I/O failure. The former rename-failure
 fixtures now check successful retained-directory barriers, a real unreadable
 scan entry, and an injected typed directory-open failure. No crash, loss,
 identity, corruption or failed-barrier assertion is removed. Test failure logs
 must be retained; failure is not retried away as acceptance.
+
+
+## Performance review
+
+The existing frozen public-API allocation gate is unchanged. Retained roots add
+allocations while opening and inspecting each segment; the gate currently blocks
+this architecture. BenchmarkJournalFilesystemOpen compares identical
+open/stat/close work using os.Open, direct Root.Open, and the journal adapter so
+reviewers can distinguish Go's confinement overhead from adapter overhead. This
+benchmark does not replace the pinned/rolling gates or durable lifecycle tests.
+Accepting that overhead or choosing a different filesystem design requires
+review before merge.

@@ -14,13 +14,38 @@ import (
 )
 
 func TestJournalRootInterruptedEvidenceAfterDirectoryReplacement(t *testing.T) {
+	for _, config := range []string{"path", "path-dot", "borrowed"} {
+		t.Run("config="+config, func(t *testing.T) {
+			testJournalRootInterruptedEvidenceAfterDirectoryReplacement(t, config)
+		})
+	}
+}
+
+func testJournalRootInterruptedEvidenceAfterDirectoryReplacement(t *testing.T, config string) {
 	for _, compressed := range []bool{false, true} {
 		for _, corrupt := range []bool{false, true} {
 			t.Run(fmt.Sprintf("gzip=%v/corrupt=%v", compressed, corrupt), func(t *testing.T) {
 				dir := t.TempDir()
 				open := func() *Journal {
 					t.Helper()
-					j, err := NewJournal(WithBufDirPath(dir), WithBufSizeByte(1024*1024), WithIsCompress(compressed), WithRotateDuration(time.Hour))
+					var selected OptionFunc
+					switch config {
+					case "borrowed":
+						if err := os.MkdirAll(dir, 0700); err != nil {
+							t.Fatal(err)
+						}
+						root, err := os.OpenRoot(dir)
+						if err != nil {
+							t.Fatal(err)
+						}
+						defer root.Close()
+						selected = WithRoot(root)
+					case "path-dot":
+						selected = WithBufDirPath(dir + string(os.PathSeparator) + ".")
+					default:
+						selected = WithBufDirPath(dir)
+					}
+					j, err := NewJournal(selected, WithBufSizeByte(1024*1024), WithIsCompress(compressed), WithRotateDuration(time.Hour))
 					if err != nil {
 						t.Fatal(err)
 					}

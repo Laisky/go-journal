@@ -53,34 +53,6 @@ func TestRegressionJournalRotationStaysWithOpenedDirectory(t *testing.T) {
 	}
 }
 
-func TestRegressionJournalPrivateSegmentModes(t *testing.T) {
-	for _, gz := range []bool{false, true} {
-		t.Run(fmt.Sprint(gz), func(t *testing.T) {
-			dir := t.TempDir()
-			j := behaviorStart(t, dir, gz)
-			behaviorCheck(t, j.WriteData(behaviorData(1)))
-			behaviorCheck(t, j.WriteId(1))
-			behaviorCheck(t, j.Sync())
-			behaviorCheck(t, j.Rotate(context.Background()))
-			j.Close()
-			again := behaviorStart(t, dir, gz)
-			again.Close()
-			entries, err := os.ReadDir(dir)
-			behaviorCheck(t, err)
-			if len(entries) < 3 {
-				t.Fatal("vacuous segment fixture")
-			}
-			for _, e := range entries {
-				i, err := e.Info()
-				behaviorCheck(t, err)
-				if i.Mode().Perm()&0077 != 0 {
-					t.Errorf("JOURNAL_MODE_REGRESSION: %s mode=%#o", e.Name(), i.Mode().Perm())
-				}
-			}
-		})
-	}
-}
-
 func TestJournalRootLockInteroperatesWithExistingBackend(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, ".journal.lock")
