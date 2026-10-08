@@ -1,7 +1,7 @@
 name: E2E observer contracts
 on:
-  pull_request:
   workflow_dispatch:
+
 permissions:
   contents: read
 concurrency:
