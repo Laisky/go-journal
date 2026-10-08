@@ -107,79 +107,45 @@ func TestPrepareNewBufFile(t *testing.T) {
 	}
 }
 
-const (
-	benchmarkFsDir = "/data/fluentd/go-utils/"
-	// benchmarkFsDir = "/Users/laisky/Downloads/"
-)
-
 func BenchmarkFSPreallocate(b *testing.B) {
-	var err error
-	// Logger.ChangeLevel("error")
-	if err = Logger.ChangeLevel("error"); err != nil {
-		b.Fatalf("set level: %+v", err)
-	}
-	// create data files
-	dataFp1, err := directio.OpenFile(benchmarkFsDir+"fp1.dat", os.O_RDWR|os.O_CREATE, FileMode)
-	// dataFp1, err := ioutil.TempFile("", "journal-test")
-	if err != nil {
-		b.Fatalf("%+v", err)
-	}
-	defer dataFp1.Close()
-	defer os.Remove(dataFp1.Name())
-	b.Logf("create file name: %v", dataFp1.Name())
-
-	dataFp2, err := directio.OpenFile(benchmarkFsDir+"fp2.dat", os.O_RDWR|os.O_CREATE, FileMode)
-	if err != nil {
-		b.Fatalf("%+v", err)
-	}
-	defer dataFp2.Close()
-	defer os.Remove(dataFp2.Name())
-	b.Logf("create file name: %v", dataFp2.Name())
-
-	dataFp3, err := directio.OpenFile(benchmarkFsDir+"fp3.dat", os.O_RDWR|os.O_CREATE, FileMode)
-	if err != nil {
-		b.Fatalf("%+v", err)
-	}
-	defer dataFp3.Close()
-	defer os.Remove(dataFp3.Name())
-	b.Logf("create file name: %v", dataFp3.Name())
-
-	payload := make([]byte, 1024)
-	b.Run("normal", func(b *testing.B) {
-		for i := 0; i < b.N; i++ {
-			if _, err = dataFp1.Write(payload); err != nil {
-				b.Fatalf("write: %+v", err)
+	for _, tc := range []struct {
+		name             string
+		allocate, extend bool
+	}{
+		{"normal", false, false}, {"preallocate", true, false},
+		{"preallocate with extended", true, true},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			fp, err := directio.OpenFile(filepath.Join(b.TempDir(), "data"), os.O_RDWR|os.O_CREATE|os.O_EXCL, FileMode)
+			if err != nil {
+				b.Fatal(err)
 			}
-			// dataFp1.Sync()
-		}
-	})
-
-	if err = fileutil.Preallocate(dataFp2, 1024*1024*1000, false); err != nil {
-		b.Fatalf("prealloc: %+v", err)
-	}
-	b.ResetTimer()
-	b.Run("preallocate", func(b *testing.B) {
-		for i := 0; i < b.N; i++ {
-			if _, err = dataFp2.Write(payload); err != nil {
-				b.Fatalf("write: %+v", err)
+			b.Cleanup(func() {
+				if err := fp.Close(); err != nil {
+					b.Error(err)
+				}
+			})
+			payload := directio.AlignedBlock(directio.BlockSize)
+			size := int64(b.N) * int64(len(payload))
+			if tc.allocate {
+				if err := fileutil.Preallocate(fp, size, tc.extend); err != nil {
+					b.Fatal(err)
+				}
 			}
-			// dataFp2.Sync()
-		}
-	})
-
-	if err = fileutil.Preallocate(dataFp3, 1024*1024*1000, true); err != nil {
-		b.Fatalf("prealloc: %+v", err)
-	}
-	b.ResetTimer()
-	b.Run("preallocate with extended", func(b *testing.B) {
-		for i := 0; i < b.N; i++ {
-			if _, err = dataFp3.Write(payload); err != nil {
-				b.Fatalf("write: %+v", err)
+			b.SetBytes(int64(len(payload)))
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				if n, err := fp.Write(payload); err != nil || n != len(payload) {
+					b.Fatalf("write=%d: %v", n, err)
+				}
 			}
-			// dataFp3.Sync()
-		}
-	})
-
+			b.StopTimer()
+			info, err := fp.Stat()
+			if err != nil || info.Size() != size {
+				b.Fatalf("written size does not match requested work: %v", err)
+			}
+		})
+	}
 }
 
 func BenchmarkWrite(b *testing.B) {
