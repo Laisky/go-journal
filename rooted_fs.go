@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"sync"
 )
 
 // journalFS keeps the public path-based helpers compatible while Journal uses
@@ -39,7 +40,34 @@ func filesystem(optional ...journalFS) journalFS {
 	return pathFS{}
 }
 
-type rootedFS struct{ root *os.Root }
+type rootedFS struct {
+	root      *os.Root
+	directory *rootedDirectory
+}
+
+// A fixed directory descriptor, derived from the retained Root. The lock pins
+// its lifetime across each kernel open; Close cannot recycle the descriptor.
+type rootedDirectory struct {
+	mu     sync.RWMutex
+	file   *os.File
+	fd     uintptr
+	closed bool
+}
+
+func (d *rootedDirectory) Close() error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.closed {
+		return os.ErrClosed
+	}
+	d.closed = true
+	return d.file.Close()
+}
+
+func newRootedFS(root *os.Root) (rootedFS, *rootedDirectory) {
+	directory := retainedOpenDirectory(root)
+	return rootedFS{root: root, directory: directory}, directory
+}
 
 // All journal files live directly in this directory. Do not turn an arbitrary
 // absolute/parent pathname into a basename: that could alias another identity.
@@ -51,18 +79,14 @@ func (f rootedFS) relative(name string) (string, error) {
 	return rel, nil
 }
 func (f rootedFS) Open(name string) (*os.File, error) {
-	rel, err := f.relative(name)
-	if err != nil {
-		return nil, err
-	}
-	return f.root.Open(rel)
+	return f.OpenFile(name, os.O_RDONLY, 0)
 }
 func (f rootedFS) OpenFile(name string, flags int, mode os.FileMode) (*os.File, error) {
 	rel, err := f.relative(name)
 	if err != nil {
 		return nil, err
 	}
-	return f.root.OpenFile(rel, flags, mode)
+	return openJournalRootFile(f.root, f.directory, name, rel, flags, mode)
 }
 func (f rootedFS) Stat(name string) (os.FileInfo, error) {
 	rel, err := f.relative(name)
@@ -72,7 +96,13 @@ func (f rootedFS) Stat(name string) (os.FileInfo, error) {
 	return f.root.Stat(rel)
 }
 func (f rootedFS) ReadDir(name string) ([]os.DirEntry, error) {
-	file, err := f.Open(name)
+	rel, err := f.relative(name)
+	if err != nil {
+		return nil, err
+	}
+	// Root eagerly confines DirEntry.Info as well as the directory open.
+	// os.NewFile lacks that internal Root metadata policy.
+	file, err := f.root.Open(rel)
 	if err != nil {
 		return nil, err
 	}

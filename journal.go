@@ -30,22 +30,23 @@ type Journal struct {
 	sync.RWMutex
 	*option
 
-	stopChan      chan struct{}
-	closeOnce     sync.Once
-	lifecycleMu   sync.Mutex
-	workers       sync.WaitGroup
-	started       bool
-	dirLock       *os.File
-	ownedRoot     *os.Root
-	disk          journalFS
-	legacyLock    *utils.Mutex
-	dataFp, idsFp *os.File // current writting journal file
-	fsStat        *bufFileStat
-	legacy        *LegacyLoader
-	dataEnc       *DataEncoder
-	idsEnc        *IdsEncoder
-	lastRotateAt  time.Time
-	syncGroup     syncBarrierGroup
+	stopChan       chan struct{}
+	closeOnce      sync.Once
+	lifecycleMu    sync.Mutex
+	workers        sync.WaitGroup
+	started        bool
+	dirLock        *os.File
+	ownedRoot      *os.Root
+	ownedDirectory *rootedDirectory
+	disk           journalFS
+	legacyLock     *utils.Mutex
+	dataFp, idsFp  *os.File // current writting journal file
+	fsStat         *bufFileStat
+	legacy         *LegacyLoader
+	dataEnc        *DataEncoder
+	idsEnc         *IdsEncoder
+	lastRotateAt   time.Time
+	syncGroup      syncBarrierGroup
 }
 
 // NewJournal create new Journal
@@ -68,7 +69,7 @@ func NewJournal(opts ...OptionFunc) (j *Journal, err error) {
 			return nil, errors.Wrap(err, "duplicate journal directory")
 		}
 		j.bufDirPath = filepath.Clean(j.ownedRoot.Name())
-		j.disk = rootedFS{root: j.ownedRoot}
+		j.disk, j.ownedDirectory = newRootedFS(j.ownedRoot)
 		j.root = nil // Do not keep the caller's borrowed handle.
 	}
 
@@ -108,7 +109,7 @@ func (j *Journal) Start(ctx context.Context) (err error) {
 		}
 		j.ownedRoot = root
 		j.bufDirPath = filepath.Clean(root.Name())
-		j.disk = rootedFS{root: root}
+		j.disk, j.ownedDirectory = newRootedFS(root)
 	}
 	lock, err := j.disk.OpenFile(filepath.Join(j.bufDirPath, ".journal.lock"), os.O_CREATE|os.O_RDWR, 0600)
 	if err == nil {
@@ -171,6 +172,9 @@ func (j *Journal) Close() {
 		if j.dirLock != nil {
 			j.dirLock.Close()
 			j.dirLock = nil
+		}
+		if j.ownedDirectory != nil {
+			j.ownedDirectory.Close()
 		}
 		if j.ownedRoot != nil {
 			j.ownedRoot.Close()

@@ -230,10 +230,19 @@ func (l *LegacyLoader) LoadMaxId() (maxId int64, err error) {
 		}
 	}
 
-	newest := l.newestDataName()
+	// Only an interrupted tail needs the newest-nonempty lookup. Every file
+	// still gets a fresh open/stat/decode/close on every frontier call.
+	var newest string
+	checkedNewest := false
 	var buffers scanReaderBuffers
 	for _, fname := range l.dataFNames {
-		id, dataErr := maxDataIDWithBuffers(fname, fname == newest, &buffers, l.disk)
+		id, dataErr := maxDataIDWithBuffers(fname, func() bool {
+			if !checkedNewest {
+				newest = l.newestDataName()
+				checkedNewest = true
+			}
+			return fname == newest
+		}, &buffers, l.disk)
 		if dataErr != nil {
 			return 0, dataErr
 		}
@@ -352,10 +361,10 @@ func (l *LegacyLoader) Clean() error {
 // maxDataID reads a sealed segment without consuming it or changing ACK state.
 // An unreadable record is not permission to allocate potentially colliding IDs.
 func maxDataID(name string, newest bool) (int64, error) {
-	return maxDataIDWithBuffers(name, newest, nil)
+	return maxDataIDWithBuffers(name, func() bool { return newest }, nil)
 }
 
-func maxDataIDWithBuffers(name string, newest bool, buffers *scanReaderBuffers, optional ...journalFS) (int64, error) {
+func maxDataIDWithBuffers(name string, newest func() bool, buffers *scanReaderBuffers, optional ...journalFS) (int64, error) {
 	disk := filesystem(optional...)
 	fp, err := disk.Open(name)
 	if err != nil {
@@ -381,7 +390,7 @@ func maxDataIDWithBuffers(name string, newest bool, buffers *scanReaderBuffers, 
 			if err == io.EOF {
 				return high, nil
 			}
-			if newest && incompleteRecord(err) {
+			if incompleteRecord(err) && newest() {
 				if preserveErr := preserveIncomplete(name, disk); preserveErr != nil {
 					return 0, preserveErr
 				}

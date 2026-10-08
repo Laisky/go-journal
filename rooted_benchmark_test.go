@@ -21,6 +21,10 @@ func BenchmarkJournalFilesystemOpen(b *testing.B) {
 	}
 	defer root.Close()
 	adapter := rootedFS{root: root}
+	journal, directory := newRootedFS(root)
+	if directory != nil {
+		defer directory.Close()
+	}
 	for _, disk := range []struct {
 		name string
 		open func(string) (*os.File, error)
@@ -28,6 +32,7 @@ func BenchmarkJournalFilesystemOpen(b *testing.B) {
 		{"path", os.Open},
 		{"root-direct", func(string) (*os.File, error) { return root.Open("record") }},
 		{"root-adapter", adapter.Open},
+		{"journal", journal.Open},
 	} {
 		b.Run(disk.name, func(b *testing.B) {
 			b.ReportAllocs()

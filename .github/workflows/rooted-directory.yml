@@ -91,6 +91,35 @@ jobs:
           assert 'tail leaked: load legacy data: read legacy data: unexpected EOF' in output
           assert not any(e.get('Action') == 'skip' for e in events)
           PY
+      - name: Require confinement failures without no-follow
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git worktree add --detach "$RUNNER_TEMP/root-open-negative" HEAD
+          python3 - "$RUNNER_TEMP/root-open-negative/rooted_open_linux.go" <<'PYTEST'
+          import sys
+          from pathlib import Path
+          p = Path(sys.argv[1])
+          source = p.read_text()
+          assert source.count('flags|syscall.O_NOFOLLOW|syscall.O_CLOEXEC') == 1
+          p.write_text(source.replace('flags|syscall.O_NOFOLLOW|syscall.O_CLOEXEC', 'flags|syscall.O_CLOEXEC'))
+          PYTEST
+          set +e
+          (cd "$RUNNER_TEMP/root-open-negative"; go test -mod=readonly -json -count=1 -timeout=90s -run '^TestRootedOpenConfinesSymlinkSwapsAndConcurrentClose$' .) > evidence/nofollow-negative.jsonl 2>&1
+          result=$?
+          set -e
+          test "$result" -ne 0
+          python3 - <<'PYTEST'
+          import json
+          from pathlib import Path
+          events = [json.loads(s) for s in Path('evidence/nofollow-negative.jsonl').read_text().splitlines() if s.startswith('{')]
+          parent = 'TestRootedOpenConfinesSymlinkSwapsAndConcurrentClose'
+          assert any(e.get('Test') == parent + '/standard=false' and e.get('Action') == 'fail' for e in events)
+          assert any(e.get('Test') == parent + '/standard=true' and e.get('Action') == 'pass' for e in events)
+          assert 'accepted escaping or absolute symlink' in ''.join(e.get('Output', '') for e in events)
+          assert not any(e.get('Action') == 'skip' for e in events)
+          PYTEST
       - name: Preserve native results, including failures
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

@@ -2,7 +2,7 @@
 
 `Journal.Start` opens the configured directory once and keeps it until `Close`.
 Rotation, directory barriers, acknowledgement scans, replay, incomplete-append
-hard links and cleanup all use that `os.Root`. Renaming or replacing the original
+hard links and cleanup all use that retained directory capability. Renaming or replacing the original
 path cannot redirect a running owner. The on-disk filenames, encodings, replay
 ordering, acknowledgement frontier and synchronization barriers are unchanged.
 
@@ -56,13 +56,32 @@ identity, corruption or failed-barrier assertion is removed. Test failure logs
 must be retained; failure is not retried away as acceptance.
 
 
-## Performance review
+## Confined Linux opens and performance
 
-The existing frozen public-API allocation gate is unchanged. Retained roots add
-allocations while opening and inspecting each segment; the gate currently blocks
-this architecture. BenchmarkJournalFilesystemOpen compares identical
-open/stat/close work using os.Open, direct Root.Open, and the journal adapter so
-reviewers can distinguish Go's confinement overhead from adapter overhead. This
-benchmark does not replace the pinned/rolling gates or durable lifecycle tests.
-Accepting that overhead or choosing a different filesystem design requires
-review before merge.
+On Linux, the owner also retains one directory descriptor obtained through
+`Root.Open(".")`. A journal filename must validate as exactly one direct child
+(or "." for directory barriers). Such opens use `openat` with `O_NOFOLLOW` and
+`O_CLOEXEC`. There are no earlier path components to follow; the final symlink
+cannot redirect this open. An `ELOOP` result falls back to `os.Root`, preserving
+allowed relative symlinks and rejecting escaping or absolute symlinks. This
+relies on the documented [O_NOFOLLOW semantics](https://man7.org/linux/man-pages/man2/open.2.html).
+Unusual open flags, unsupported modes, and other operating systems use `os.Root`
+directly. Directory enumeration keeps `Root.Open` so returned entries retain its
+confined metadata semantics. Stat, hard links and removals also remain Root operations.
+
+A read lock pins the extra descriptor throughout each open; `Close` takes the
+write lock and closes it before the owned Root. There is no segment descriptor,
+metadata, frontier, result or seek-position cache. Every scan reopens, stats,
+decodes and closes every selected segment. The newest-nonempty lookup is delayed
+until an interrupted record actually needs that recovery decision.
+
+The frozen pinned and rolling public-API gates and their thresholds are unchanged.
+`BenchmarkJournalFilesystemOpen` compares the same open/stat/close operation
+through paths, direct Root, the portable adapter and the owner implementation.
+On Linux the owner removes the additional per-open allocations. Native tests
+exercise both the optimized and pure-Root paths; a Linux negative control must
+fail confinement assertions when `O_NOFOLLOW` is removed.
+
+See [measurement results and limitations](ROOTED_PERF.md). Passing benchmark and
+correctness checks is required before readiness; this remains an architectural
+refactor requiring review before merge.
