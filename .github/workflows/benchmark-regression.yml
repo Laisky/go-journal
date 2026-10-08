@@ -1,10 +1,13 @@
 name: Benchmark regression gate
 on:
-  pull_request:
-  push:
-    branches: [master]
-  merge_group:
   workflow_dispatch:
+    inputs:
+      baseline:
+        description: Rolling comparison base ref (use the candidate PR base SHA for exact reproduction)
+        required: true
+        default: master
+        type: string
+
 permissions:
   contents: read
 concurrency:
@@ -17,7 +20,7 @@ jobs:
     env:
       GOTOOLCHAIN: local
       GOMAXPROCS: '4'
-      PR_BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
+      PR_BASE: ${{ inputs.baseline || github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:

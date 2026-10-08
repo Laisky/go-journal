@@ -1,5 +1,10 @@
 # Permanent benchmark regression gate
 
+> Policy amendment (2026-10-08): [CI testing policy](../../docs/ci-testing.md)
+> moves full/race, integration and performance qualification to manual dev/staging
+> or workflow dispatch. Historical automatic-gate descriptions below are superseded;
+> test assertions and thresholds remain intact. Repository protection settings are unchanged.
+
 Check name: **Benchmark regression gate / benchmark-regression**. This is a
 fail-closed regression check, not another report-only experiment. It runs on every
 pull request (including drafts), pushes to master, merge groups and manual runs.

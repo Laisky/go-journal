@@ -5,27 +5,40 @@ on:
     branches: [master]
   pull_request:
     branches: [master]
+  merge_group:
   workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: go-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 5
+    env:
+      GOTOOLCHAIN: local
+      PYTHONDONTWRITEBYTECODE: '1'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
-          go-version: '1.27.x'
-      - run: go version
-      - run: go mod verify
-      - run: go build -mod=readonly ./...
-      - run: go vet -mod=readonly ./...
-      - run: go test -mod=readonly -count=1 -timeout=180s ./...
-      - run: go test -mod=readonly -race -count=5 -shuffle=on -timeout=180s ./...
-      - run: go test -mod=readonly -race -count=10 -shuffle=on -timeout=180s -run 'Test(Regression|Recovery)' ./...
-      - run: git diff --exit-code -- go.mod go.sum
+          go-version: '1.27.1'
+          cache: true
+      - name: Check gate failure reporting
+        run: python3 -m unittest discover -s .scripts -p test_fast_ci.py -v
+      - name: Formatting and essential unit tests
+        run: python3 .scripts/fast_ci.py --evidence "$RUNNER_TEMP/fast-ci"
+      - name: Retain actual discovery, exit statuses, and timings
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: fast-ci-${{ github.sha }}
+          path: ${{ runner.temp }}/fast-ci
+          if-no-files-found: error
+          retention-days: 14

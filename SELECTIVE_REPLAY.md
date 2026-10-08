@@ -1,5 +1,10 @@
 # Selective acknowledgement replay
 
+> Policy amendment (2026-10-08): [CI testing policy](docs/ci-testing.md)
+> moves full/race, integration and performance qualification to manual dev/staging
+> or workflow dispatch. Historical automatic-gate descriptions below are superseded;
+> test assertions and thresholds remain intact. Repository protection settings are unchanged.
+
 `LegacyLoader.Load` can avoid materializing the payload of an already acknowledged
 record. It validates complete envelopes in the ordinary reader's **already
 buffered bytes** before checking exact acknowledgement membership. No on-disk

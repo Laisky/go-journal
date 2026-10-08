@@ -1,0 +1,14 @@
+[
+  {
+    "package": ".",
+    "tests": [
+      "TestNewInt64Set",
+      "TestNewUint32Set",
+      "TestRegressionInt64SetCountsUniqueIDs",
+      "TestRegressionDataWritePropagatesFlushError",
+      "TestRegressionIDWritePropagatesFlushError",
+      "TestRegressionFailedIDWriteIsNotCommitted",
+      "TestSelectiveRecognizesOnlyValidatedEnvelopes"
+    ]
+  }
+]

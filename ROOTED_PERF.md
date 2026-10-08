@@ -1,5 +1,10 @@
 # Retained-root performance investigation
 
+> Policy amendment (2026-10-08): [CI testing policy](docs/ci-testing.md)
+> moves full/race, integration and performance qualification to manual dev/staging
+> or workflow dispatch. Historical automatic-gate descriptions below are superseded;
+> test assertions and thresholds remain intact. Repository protection settings are unchanged.
+
 The original rooted implementation at `939a5210b8e9ed8f8b1c1a8781493ac265dac4a4`
 failed the unchanged pinned allocation gate: data scans used 201.0625 allocations
 per operation (limit 146.8656), and ACK scans used 244.0586 (limit 176.2615).

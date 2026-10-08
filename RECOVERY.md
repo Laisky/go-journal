@@ -1,5 +1,10 @@
 # Recovery boundaries
 
+> Policy amendment (2026-10-08): [CI testing policy](docs/ci-testing.md)
+> moves full/race, integration and performance qualification to manual dev/staging
+> or workflow dispatch. Historical automatic-gate descriptions below are superseded;
+> test assertions and thresholds remain intact. Repository protection settings are unchanged.
+
 `LoadMaxId()` includes sealed data records and acknowledgement records. Pending
 records must reserve their IDs across a restart; ACK-only recovery can reuse an
 ID that still names another retained record.
