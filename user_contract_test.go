@@ -254,17 +254,18 @@ func TestUserRotationFailureKeepsWriterUsable(t *testing.T) {
 			j := userJournal(t, dir, gz)
 			userPut(t, j, 1)
 			userSync(t, j)
-			// A temporarily inaccessible directory is a recoverable rotation failure.
-			moved := dir + "-moved"
-			if err := os.Rename(dir, moved); err != nil {
+			// A dangling entry causes a real directory-snapshot error. Renaming
+			// the directory is no longer a fault: the retained Root follows it.
+			broken := filepath.Join(dir, "unreadable-entry")
+			if err := os.Symlink("missing-target", broken); err != nil {
 				t.Fatal(err)
 			}
 			err := j.Rotate(context.Background())
-			if e := os.Rename(moved, dir); e != nil {
+			if e := os.Remove(broken); e != nil {
 				t.Fatal(e)
 			}
 			if err == nil {
-				t.Fatal("rotation through missing directory reported success")
+				t.Fatal("rotation accepted an unreadable directory entry")
 			}
 			userPut(t, j, 2)
 			userSync(t, j)

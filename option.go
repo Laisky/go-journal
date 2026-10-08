@@ -2,6 +2,7 @@ package journal
 
 import (
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/Laisky/go-utils"
@@ -26,6 +27,7 @@ const (
 type option struct {
 	logger       *utils.LoggerType
 	bufDirPath   string
+	root         *os.Root // borrowed until NewJournal duplicates it
 	bufSizeBytes int64
 	// isAggresiveGC force gc when reset legacy loader
 	isAggresiveGC,
@@ -155,6 +157,7 @@ func WithBufDirPath(path string) OptionFunc {
 		}
 
 		o.bufDirPath = path
+		o.root = nil
 		return nil
 	}
 }
@@ -200,6 +203,24 @@ func WithIsAggresiveGC(is bool) OptionFunc {
 func WithIsCompress(is bool) OptionFunc {
 	return func(o *option) (err error) {
 		o.isCompress = is
+		return nil
+	}
+}
+
+// WithRoot selects an already opened journal directory. NewJournal duplicates
+// the root only after all options validate; the caller may close its handle
+// after NewJournal returns. The journal owns the duplicate until Close, even
+// when Start fails. No path writability probe or /proc descriptor path is used.
+// The directory is an operator-owned single-writer WAL domain. os.Root confines
+// symlink resolution; it does not prevent hard links, mounts or hostile writers
+// already authorized to mutate the directory's contents.
+func WithRoot(root *os.Root) OptionFunc {
+	return func(o *option) error {
+		if root == nil {
+			return fmt.Errorf("journal root cannot be nil")
+		}
+		o.root = root
+		o.bufDirPath = root.Name()
 		return nil
 	}
 }

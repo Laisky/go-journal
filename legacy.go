@@ -24,6 +24,7 @@ type LegacyLoader struct {
 	// acquire read lock during read/write data/ids files.
 	sync.RWMutex
 	logger *utils.LoggerType
+	disk   journalFS
 
 	dataFNames, idsFNames []string
 	isNeedReload,         // prepare datafp for `Load`
@@ -101,7 +102,7 @@ func (l *LegacyLoader) GetIdsLen() int {
 // harmless during retry; unrelated failures must not become a successful EOF.
 func (l *LegacyLoader) removeFiles(files []string) error {
 	for _, name := range files {
-		if err := os.Remove(name); err != nil && !os.IsNotExist(err) {
+		if err := filesystem(l.disk).Remove(name); err != nil && !os.IsNotExist(err) {
 			return errors.Wrapf(err, "remove legacy file %s", name)
 		}
 	}
@@ -146,7 +147,7 @@ READ_NEW_FILE:
 		l.logger.Debug("read new data file",
 			zap.Strings("data_files", l.dataFNames),
 			zap.String("fname", l.dataFNames[l.dataFileIdx]))
-		l.dataFp, err = os.Open(l.dataFNames[l.dataFileIdx])
+		l.dataFp, err = filesystem(l.disk).Open(l.dataFNames[l.dataFileIdx])
 		if err != nil {
 			l.dataFp = nil
 			l.dataFileIdx--
@@ -170,8 +171,11 @@ READ_NEW_FILE:
 READ_NEW_LINE:
 	var acknowledged bool
 	if acknowledged, err = l.decoder.readWithAcknowledgement(data, l.ids.CheckAndRemove); err != nil {
-		if err != io.EOF && l.newestDataName() == l.dataFp.Name() && incompleteRecord(err) {
-			if preserveErr := preserveIncomplete(l.dataFp.Name()); preserveErr != nil {
+		// Compare names from the same scan snapshot. Root.Open preserves its
+		// diagnostic label (including "/." on a duplicated root), whereas
+		// the journal's scanned names are clean paths.
+		if err != io.EOF && l.newestDataName() == l.dataFNames[l.dataFileIdx] && incompleteRecord(err) {
+			if preserveErr := preserveIncomplete(l.dataFp.Name(), l.disk); preserveErr != nil {
 				return preserveErr
 			}
 			l.logger.Warn("recover complete records before interrupted final append", zap.Error(err), zap.String("file", l.dataFp.Name()))
@@ -218,7 +222,7 @@ func (l *LegacyLoader) LoadMaxId() (maxId int64, err error) {
 			var err error
 			id, err = dec.LoadMaxId()
 			return err
-		}, &ackBuffers); err != nil {
+		}, &ackBuffers, l.disk); err != nil {
 			return 0, err
 		}
 		if id > maxId {
@@ -226,10 +230,19 @@ func (l *LegacyLoader) LoadMaxId() (maxId int64, err error) {
 		}
 	}
 
-	newest := l.newestDataName()
+	// Only an interrupted tail needs the newest-nonempty lookup. Every file
+	// still gets a fresh open/stat/decode/close on every frontier call.
+	var newest string
+	checkedNewest := false
 	var buffers scanReaderBuffers
 	for _, fname := range l.dataFNames {
-		id, dataErr := maxDataIDWithBuffers(fname, fname == newest, &buffers)
+		id, dataErr := maxDataIDWithBuffers(fname, func() bool {
+			if !checkedNewest {
+				newest = l.newestDataName()
+				checkedNewest = true
+			}
+			return fname == newest
+		}, &buffers, l.disk)
 		if dataErr != nil {
 			return 0, dataErr
 		}
@@ -254,7 +267,7 @@ func (l *LegacyLoader) LoadAllids(ids Int64SetItf) error {
 func (l *LegacyLoader) loadAllIDs(ids Int64SetItf) error {
 	var ackBuffers scanIDBuffers
 	for _, name := range l.idsFNames {
-		if err := readIDsFileWithBuffers(name, func(dec *IdsDecoder) error { return dec.ReadAllToInt64Set(ids) }, &ackBuffers); err != nil {
+		if err := readIDsFileWithBuffers(name, func(dec *IdsDecoder) error { return dec.ReadAllToInt64Set(ids) }, &ackBuffers, l.disk); err != nil {
 			return err
 		}
 	}
@@ -293,7 +306,7 @@ func (l *LegacyLoader) Clean() error {
 			if err := readIDsFileWithBuffers(name, func(dec *IdsDecoder) (err error) {
 				maxID, err = dec.LoadMaxId()
 				return err
-			}, &ackBuffers); err != nil {
+			}, &ackBuffers, l.disk); err != nil {
 				return err
 			}
 			if maxID > frontier {
@@ -325,7 +338,7 @@ func (l *LegacyLoader) Clean() error {
 		}
 	}
 	for dir := range dirs {
-		fp, err := os.Open(dir)
+		fp, err := filesystem(l.disk).Open(dir)
 		if err != nil {
 			return err
 		}
@@ -348,11 +361,12 @@ func (l *LegacyLoader) Clean() error {
 // maxDataID reads a sealed segment without consuming it or changing ACK state.
 // An unreadable record is not permission to allocate potentially colliding IDs.
 func maxDataID(name string, newest bool) (int64, error) {
-	return maxDataIDWithBuffers(name, newest, nil)
+	return maxDataIDWithBuffers(name, func() bool { return newest }, nil)
 }
 
-func maxDataIDWithBuffers(name string, newest bool, buffers *scanReaderBuffers) (int64, error) {
-	fp, err := os.Open(name)
+func maxDataIDWithBuffers(name string, newest func() bool, buffers *scanReaderBuffers, optional ...journalFS) (int64, error) {
+	disk := filesystem(optional...)
+	fp, err := disk.Open(name)
 	if err != nil {
 		return 0, errors.Wrap(err, "open recovery data")
 	}
@@ -376,8 +390,8 @@ func maxDataIDWithBuffers(name string, newest bool, buffers *scanReaderBuffers) 
 			if err == io.EOF {
 				return high, nil
 			}
-			if newest && incompleteRecord(err) {
-				if preserveErr := preserveIncomplete(name); preserveErr != nil {
+			if incompleteRecord(err) && newest() {
+				if preserveErr := preserveIncomplete(name, disk); preserveErr != nil {
 					return 0, preserveErr
 				}
 				Logger.Warn("incomplete final append retained for inspection", zap.String("file", name), zap.Error(err))
@@ -401,7 +415,7 @@ func incompleteRecord(err error) bool {
 
 func (l *LegacyLoader) newestDataName() string {
 	for i := len(l.dataFNames) - 1; i >= 0; i-- {
-		info, err := os.Stat(l.dataFNames[i])
+		info, err := filesystem(l.disk).Stat(l.dataFNames[i])
 		if err != nil {
 			return ""
 		}
@@ -415,19 +429,20 @@ func (l *LegacyLoader) newestDataName() string {
 // Hard-link the complete original segment before permitting prefix recovery.
 // Cleanup can unlink the WAL name only after replacements are synchronized;
 // this evidence name is never considered replayable input and is not removed.
-func preserveIncomplete(name string) error {
+func preserveIncomplete(name string, optional ...journalFS) error {
+	disk := filesystem(optional...)
 	evidence := name + ".incomplete"
-	if err := os.Link(name, evidence); err != nil {
+	if err := disk.Link(name, evidence); err != nil {
 		if !os.IsExist(err) {
 			return errors.Wrap(err, "retain interrupted append")
 		}
-		a, ae := os.Stat(name)
-		b, be := os.Stat(evidence)
+		a, ae := disk.Stat(name)
+		b, be := disk.Stat(evidence)
 		if ae != nil || be != nil || !os.SameFile(a, b) {
 			return errors.New("interrupted append evidence path already belongs to another file")
 		}
 	}
-	dir, err := os.Open(filepath.Dir(name))
+	dir, err := disk.Open(filepath.Dir(name))
 	if err != nil {
 		return err
 	}

@@ -41,8 +41,8 @@ func (b *scanIDBuffers) release(dec *IdsDecoder) {
 
 // Keep the original per-file open/stat/consume/close and error policy. The nil
 // buffer path constructs a fresh decoder, including for all gzip files.
-func readIDsFileWithBuffers(name string, consume func(*IdsDecoder) error, buffers *scanIDBuffers) (err error) {
-	fp, err := os.Open(name)
+func readIDsFileWithBuffers(name string, consume func(*IdsDecoder) error, buffers *scanIDBuffers, optional ...journalFS) (err error) {
+	fp, err := filesystem(optional...).Open(name)
 	if err != nil {
 		return errors.Wrap(err, "open acknowledgement file")
 	}
