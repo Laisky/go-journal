@@ -13,7 +13,8 @@ import (
 	"github.com/pkg/errors"
 )
 
-var Logger *utils.LoggerType
+// Logger is the default journal logger and supports go-utils logger implementations.
+var Logger utils.LoggerItf
 
 func init() {
 	var err error

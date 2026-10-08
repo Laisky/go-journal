@@ -25,7 +25,7 @@ const (
 
 // option configuration of Journal
 type option struct {
-	logger       *utils.LoggerType
+	logger       utils.LoggerItf
 	bufDirPath   string
 	root         *os.Root // borrowed until NewJournal duplicates it
 	bufSizeBytes int64
@@ -59,9 +59,13 @@ func newOption() *option {
 
 type OptionFunc func(*option) error
 
-func WithLogger(logger *utils.LoggerType) OptionFunc {
+// WithLogger sets the journal logger, rejecting nil logger implementations.
+func WithLogger(logger utils.LoggerItf) OptionFunc {
 	return func(o *option) error {
 		if logger == nil {
+			return fmt.Errorf("logger cannot be nil")
+		}
+		if concrete, ok := logger.(*utils.LoggerType); ok && concrete == nil {
 			return fmt.Errorf("logger cannot be nil")
 		}
 

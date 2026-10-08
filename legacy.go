@@ -23,7 +23,7 @@ type LegacyLoader struct {
 	// acquire write lock during reset.
 	// acquire read lock during read/write data/ids files.
 	sync.RWMutex
-	logger *utils.LoggerType
+	logger utils.LoggerItf
 	disk   journalFS
 
 	dataFNames, idsFNames []string
@@ -39,7 +39,7 @@ type LegacyLoader struct {
 
 // NewLegacyLoader create new LegacyLoader
 func NewLegacyLoader(ctx context.Context,
-	logger *utils.LoggerType,
+	logger utils.LoggerItf,
 	dataFNames, idsFNames []string,
 	isCompress bool,
 	committedIDTTL time.Duration,
