@@ -25,6 +25,8 @@ const (
 
 // option configuration of Journal
 type option struct {
+	storageGuard StorageGuard
+
 	logger       *utils.LoggerType
 	bufDirPath   string
 	root         *os.Root // borrowed until NewJournal duplicates it
@@ -223,4 +225,12 @@ func WithRoot(root *os.Root) OptionFunc {
 		o.bufDirPath = root.Name()
 		return nil
 	}
+}
+
+// StorageGuard funds managed growth before a mutation and holds the owner's
+// quiescence barrier until release. The journal never supplies record contents.
+type StorageGuard func(kind string, bytes int64) (release func(), err error)
+
+func WithStorageGuard(guard StorageGuard) OptionFunc {
+	return func(o *option) error { o.storageGuard = guard; return nil }
 }

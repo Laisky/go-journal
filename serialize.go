@@ -45,6 +45,7 @@ type BaseSerializer struct {
 
 // DataEncoder data serializer
 type DataEncoder struct {
+	beforeAppend func(int64) (func(), error)
 	BaseSerializer
 	// writeChan chan interface{}
 	writer   *msgp.Writer
@@ -193,6 +194,13 @@ func (enc *DataEncoder) Write(msg *Data) error {
 	// encoders exactly once, and discard all staged bytes when serialization fails.
 	if err := msgp.Encode(&enc.record, msg); err != nil {
 		return errors.Wrap(err, "encode journal data")
+	}
+	if enc.beforeAppend != nil {
+		release, err := enc.beforeAppend(int64(enc.record.Len()))
+		if err != nil {
+			return err
+		}
+		defer release()
 	}
 	n, err := enc.record.appendTo(enc.writer)
 	if err == nil && n != enc.record.Len() {
