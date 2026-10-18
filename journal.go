@@ -205,7 +205,7 @@ func (j *Journal) initBufDir(ctx context.Context) (err error) {
 
 // Flush flush journal files buffer to file
 func (j *Journal) Flush() error {
-	if j.storageGuard != nil {
+	if j.option != nil && j.storageGuard != nil {
 		release, err := j.storageGuard("flush", 64<<10)
 		if err != nil {
 			return err
@@ -278,7 +278,7 @@ func (j *Journal) startFlushTrigger(ctx context.Context) {
 			return
 		case <-ticker.C:
 			release := func() {}
-			if j.storageGuard != nil {
+			if j.option != nil && j.storageGuard != nil {
 				release, err = j.storageGuard("flush", 64<<10)
 				if err != nil {
 					j.logger.Error("journal flush budget refused", zap.Error(err))
@@ -356,7 +356,7 @@ func (j *Journal) WriteData(data *Data) (err error) {
 	// j.logger.Debug("write data", zap.Int64("id", GetId(*data)))
 	err = j.dataEnc.Write(data)
 	if err == nil {
-		if j.storageGuard == nil {
+		if j.option == nil || j.storageGuard == nil {
 			j.activeDataWritten.Store(true)
 			j.dataSequence.Add(1)
 		}
@@ -366,7 +366,7 @@ func (j *Journal) WriteData(data *Data) (err error) {
 
 // WriteId write id to journal
 func (j *Journal) WriteId(id int64) error {
-	if j.storageGuard != nil {
+	if j.option != nil && j.storageGuard != nil {
 		release, e := j.storageGuard("ack", 64<<10)
 		if e != nil {
 			return e
@@ -420,7 +420,7 @@ func (j *Journal) isReadyToRotate() (ok bool) {
 // Rotate serializes rotation with writes, Flush, Sync and Close. A failed
 // replacement-file preparation leaves the current synchronized writer usable.
 func (j *Journal) Rotate(ctx context.Context) error {
-	if j.storageGuard != nil {
+	if j.option != nil && j.storageGuard != nil {
 		release, e := j.storageGuard("rotation", 64<<10)
 		if e != nil {
 			return e
@@ -450,7 +450,7 @@ func (j *Journal) rotateUnderGuard(ctx context.Context) error {
 		return ErrDuringRotate
 	}
 	preallocate := j.bufSizeBytes
-	if j.storageGuard != nil {
+	if j.option != nil && j.storageGuard != nil {
 		preallocate = 0
 	} // No speculative disk allocation outside the funded mutation.
 	next, err := prepareNewBufFile(j.disk, j.bufDirPath, j.fsStat, scan, j.isCompress, preallocate)
@@ -470,7 +470,7 @@ func (j *Journal) rotateUnderGuard(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if j.storageGuard != nil {
+	if j.option != nil && j.storageGuard != nil {
 		dataEnc.beforeAppend = j.guardPreparedData
 	}
 	idsEnc, err := NewIdsEncoder(next.NewIDsFp, j.isCompress)
@@ -622,7 +622,7 @@ func (j *Journal) LoadLegacyBuf(data *Data) (err error) {
 // Overlapping callers may share a barrier; sequential calls never reuse a
 // completed result. Each shared barrier still synchronizes both files and dir.
 func (j *Journal) Sync() error {
-	if j.storageGuard != nil {
+	if j.option != nil && j.storageGuard != nil {
 		release, e := j.storageGuard("sync", 64<<10)
 		if e != nil {
 			return e
@@ -705,7 +705,7 @@ func (j *Journal) LoadLegacyBufRetained(data *Data) error {
 // CleanLegacyBuf synchronizes current ACKs before retiring the caller-proven
 // resolved frozen snapshot. It never unlocks the caller's legacy ownership.
 func (j *Journal) CleanLegacyBuf() error {
-	if j.storageGuard != nil {
+	if j.option != nil && j.storageGuard != nil {
 		release, e := j.storageGuard("cleanup", 64<<10)
 		if e != nil {
 			return e
@@ -853,7 +853,7 @@ func (j *Journal) ReadRecoveryRecords(ctx context.Context, visit func(*Data) err
 		return 0, errors.New("recovery callback required")
 	}
 	release := func() {}
-	if j.storageGuard != nil {
+	if j.option != nil && j.storageGuard != nil {
 		var err error
 		release, err = j.storageGuard("recovery", 64<<10)
 		if err != nil {

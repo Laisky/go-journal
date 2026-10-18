@@ -8,7 +8,16 @@
       "TestRegressionDataWritePropagatesFlushError",
       "TestRegressionIDWritePropagatesFlushError",
       "TestRegressionFailedIDWriteIsNotCommitted",
-      "TestSelectiveRecognizesOnlyValidatedEnvelopes"
+      "TestSelectiveRecognizesOnlyValidatedEnvelopes",
+      "TestCodec",
+      "TestCodecBufferedCompletenessControls",
+      "TestRetainedReplayDoesNotCleanBeforeExplicitAcknowledgedRetirement",
+      "TestRetainedCleanupRequiresOwnerAndSuccessfulSync",
+      "TestRetainedPrepareIncludesCurrentACKWithoutNewEmptyData",
+      "TestGuardedJournalEncodableOnlyRunsOnce",
+      "TestRetainedRecoveryUsesOwnedRootAfterRename",
+      "TestClosedRecoveryArchiveExactRawOwnershipAndPreservation",
+      "TestClosedRecoveryArchiveRejectsFreshOversizedTruncatedOrChangedSource"
     ]
   }
 ]

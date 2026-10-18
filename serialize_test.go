@@ -250,14 +250,17 @@ func TestCodec(t *testing.T) {
 	defer os.Remove(fp.Name())
 	t.Logf("create file name: %v", fp.Name())
 
-	encoder := codec.NewEncoder(bufio.NewWriter(fp), NewCodec())
+	writer := bufio.NewWriter(fp)
+	encoder := codec.NewEncoder(writer, NewCodec())
 
 	var (
 		data = map[string]interface{}{}
 		msg  string
 	)
+	want := make([]string, 0, 100)
 	for i := 0; i < 100; i++ {
 		msg = "12345" + utils.RandomStringWithLength(200-i) + "67890"
+		want = append(want, msg)
 		data["id"] = i
 		data["message"] = map[string]interface{}{"log": msg}
 		if err = encoder.Encode(&data); err != nil {
@@ -265,19 +268,35 @@ func TestCodec(t *testing.T) {
 		}
 	}
 
+	if err = writer.Flush(); err != nil {
+		t.Fatal(err)
+	}
 	if _, err = fp.Seek(0, 0); err != nil {
 		t.Fatalf("seek: %+v", err)
 	}
 	data["message"] = map[string]interface{}{}
 	decoder := codec.NewDecoder(bufio.NewReader(fp), NewCodec())
-	for {
-		if err = decoder.Decode(&data); err == io.EOF {
-			t.Log("all done")
-			break
-		} else if err != nil {
+	count := 0
+	for count < len(want) {
+		if err = decoder.Decode(&data); err != nil {
 			t.Fatalf("got error: %+v", err)
 		}
 
-		t.Log(string(data["message"].(map[string]interface{})["log"].([]byte)))
+		if count >= len(want) || string(data["message"].(map[string]interface{})["log"].([]byte)) != want[count] {
+			t.Fatal("codec record mismatch", count)
+		}
+		count++
+
 	}
+	st, e := fp.Stat()
+	if e != nil {
+		t.Fatal(e)
+	}
+	if int64(decoder.NumBytesRead()) != st.Size() {
+		t.Fatal("unexpected trailing codec bytes")
+	}
+	if count != len(want) {
+		t.Fatalf("incomplete codec stream: got %d want %d", count, len(want))
+	}
+
 }

@@ -46,3 +46,33 @@ acknowledged ID. Completion can be out of order; keeping only the newest file
 could otherwise roll the recovered identity frontier backwards. At most two old
 ACK segments are retained by this rule. See BEHAVIOR.md for tests and validation
 limits, including the native-module-graph check still required before merge.
+
+
+## Retained originals and closed archive reading
+
+LoadLegacyBufRetained reaches a frozen snapshot EOF without deleting its data
+files. The caller owns replay progress and may use PrepareRetainedReplay after
+EOF; empty retries reuse the writer. CleanLegacyBuf is an explicit synchronized
+retirement operation, requiring legacy ownership and a caller-proven complete
+resolution. Transport ACK is not proof of downstream stable storage.
+
+WithStorageGuard funds persistent mutations before writing and holds the
+caller's quiescence barrier until release. It receives sizes and mutation kinds,
+never content. Serialization callbacks run exactly once before the grant. A
+guarded journal disables speculative file preallocation; the owner must fund
+startup, ACK/flush/sync/rotation and retain future progress headroom.
+
+ReadRecoveryRecords returns originals including acknowledged records from a
+running owner's synchronized prefixes. For operator recovery of a stopped
+journal, OpenClosedRecoveryArchive duplicates an os.Root and acquires the
+existing ownership lock without creating files. WalkRaw validates and returns
+each original MessagePack object and decoded Data identity, with a finite per
+record size limit. Repeated walks use the same captured prefixes; source file
+identity/size changes fail. All reads stay rooted after directory rename.
+Close releases ownership and never removes records or ACKs. A caller can fully
+preflight a snapshot before transport; it must preserve the source on any
+transport outcome and account for ambiguous-ACK duplicates.
+
+Only a consistent, exclusively owned journal directory is a valid recovery
+source. Local process-crash tests assume persistent storage remains intact;
+these APIs do not establish power-loss or host/disk-destruction protection.
