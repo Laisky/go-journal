@@ -35,7 +35,14 @@ uses the interface without narrowing a custom logger. WithLogger and
 WithLoggerInterface reject nil and typed-nil *utils.LoggerType values.
 Other custom implementations must be non-nil usable logger values.
 
-The Go floor remains 1.27.0. Intentional coreos/etcd legacy test imports and
+The Go source-compatibility floor remains 1.27.0. CI uses Go 1.27.3.
+Consumers should build with Go 1.27.3 or a supported patched successor.
+A fresh Go 1.27.2 scan reported GO-2026-6809 in crypto/x509, including a
+static path through the exported encoder's arbitrary io.Writer. Journal's
+ordinary filesystem writer does not establish a live TLS attack path.
+The official [Go release history](https://go.dev/doc/devel/release)
+confirms the 1.27.3 x509 security fix. All existing workflow runtime pins
+move to that patch; the dependency graph and file formats are unchanged. Intentional coreos/etcd legacy test imports and
 the existing RoaringBitmap and codec versions are retained. There is no
 WAL format, ACK ownership, reclamation, durability-barrier or TTL policy
 change.
