@@ -28,7 +28,9 @@ and real journal start/write/Sync plus ACK membership tests cover the fix.
 
 go-utils v1.17.1 factory functions return utils.LoggerItf. New callers can use
 the additive WithLoggerInterface and NewLegacyLoaderWithLoggerInterface
-entry points with factory results or custom implementations. Internal storage
+entry points with factory results, Named/With results or custom implementations.
+Code using the upgraded go-utils interface-returning helpers should choose
+these additive entry points; the original concrete function types are retained. Internal storage
 uses the interface without narrowing a custom logger. WithLogger and
 WithLoggerInterface reject nil and typed-nil *utils.LoggerType values.
 Other custom implementations must be non-nil usable logger values.
@@ -72,7 +74,11 @@ The automatic fast gate now requires 12 named root tests and 10 dependency
 contracts, including Linux flock/OFD lock interoperability. Its existing
 eight gate tests reject missing, skipped, duplicate, failed or timed-out
 execution evidence. Full ordinary/race and recovery commands retain
-readonly modules and the 180-second package timeout; their actual results
+readonly modules and the 180-second package timeout. Five full race rounds
+run in separate processes so the cumulative duration does not exhaust a
+single package budget. The failed original in-process five-round attempt
+is retained in task evidence; isolated rounds do not qualify repeated
+execution in one process. Their actual results
 are reported in the PR description and saved task evidence.
 
 Existing WAL recovery, ACK/dedup/bitmap, plain/gzip, corruption, partial
@@ -81,4 +87,3 @@ establish physical-power-loss qualification, application-level exactly-once
 delivery, production capacity, or compatibility of every remote
 configuration service deployment. Module, imported-package and called-symbol
 scan results are reported separately.
-
