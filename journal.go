@@ -13,14 +13,17 @@ import (
 	"github.com/pkg/errors"
 )
 
-// Logger is the default journal logger and supports go-utils logger implementations.
-var Logger utils.LoggerItf
+// Logger is the default journal logger. Its concrete type is retained for callers
+// that use the embedded zap.Logger.
+var Logger *utils.LoggerType
 
 func init() {
-	var err error
-	if Logger, err = utils.NewConsoleLoggerWithName("go-journal", "info"); err != nil {
+	logger, err := utils.NewConsoleLoggerWithName("go-journal", "info")
+	if err != nil {
 		utils.Logger.Panic("new journal logger", zap.Error(err))
 	}
+	// The pinned go-utils constructor builds a *LoggerType behind its interface.
+	Logger = logger.(*utils.LoggerType)
 }
 
 // Journal redo log consist by msgs and committed ids
@@ -453,7 +456,7 @@ func (j *Journal) refreshLegacyLoader(ctx context.Context) {
 			zap.Strings("data_files", j.fsStat.OldDataFnames),
 			zap.Strings("ids_files", j.fsStat.OldIDsDataFnames),
 		)
-		j.legacy = NewLegacyLoader(
+		j.legacy = NewLegacyLoaderWithLoggerInterface(
 			ctx,
 			j.logger,
 			j.fsStat.OldDataFnames,

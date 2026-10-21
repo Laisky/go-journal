@@ -59,8 +59,13 @@ func newOption() *option {
 
 type OptionFunc func(*option) error
 
-// WithLogger sets the journal logger, rejecting nil logger implementations.
-func WithLogger(logger utils.LoggerItf) OptionFunc {
+// WithLogger sets the journal logger, preserving the concrete logger API.
+func WithLogger(logger *utils.LoggerType) OptionFunc {
+	return WithLoggerInterface(logger)
+}
+
+// WithLoggerInterface accepts go-utils factory results and custom logger implementations.
+func WithLoggerInterface(logger utils.LoggerItf) OptionFunc {
 	return func(o *option) error {
 		if logger == nil {
 			return fmt.Errorf("logger cannot be nil")

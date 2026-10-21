@@ -39,6 +39,16 @@ type LegacyLoader struct {
 
 // NewLegacyLoader create new LegacyLoader
 func NewLegacyLoader(ctx context.Context,
+	logger *utils.LoggerType,
+	dataFNames, idsFNames []string,
+	isCompress bool,
+	committedIDTTL time.Duration,
+) *LegacyLoader {
+	return NewLegacyLoaderWithLoggerInterface(ctx, logger, dataFNames, idsFNames, isCompress, committedIDTTL)
+}
+
+// NewLegacyLoaderWithLoggerInterface accepts a go-utils interface logger.
+func NewLegacyLoaderWithLoggerInterface(ctx context.Context,
 	logger utils.LoggerItf,
 	dataFNames, idsFNames []string,
 	isCompress bool,

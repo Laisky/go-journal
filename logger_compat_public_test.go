@@ -27,7 +27,7 @@ func TestRegressionLoggerInterfaceWorkflow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	j, err := journal.NewJournal(journal.WithLogger(logger),
+	j, err := journal.NewJournal(journal.WithLoggerInterface(logger),
 		journal.WithBufDirPath(t.TempDir()), journal.WithIsAggresiveGC(false))
 	if err != nil {
 		t.Fatal(err)
@@ -57,7 +57,7 @@ func TestRegressionLoggerInterfaceWorkflow(t *testing.T) {
 
 func TestRegressionLoggerRejectsNil(t *testing.T) {
 	for _, logger := range []utils.LoggerItf{nil, (*utils.LoggerType)(nil)} {
-		if _, err := journal.NewJournal(journal.WithLogger(logger)); err == nil {
+		if _, err := journal.NewJournal(journal.WithLoggerInterface(logger)); err == nil {
 			t.Fatal("nil logger was accepted")
 		}
 	}
