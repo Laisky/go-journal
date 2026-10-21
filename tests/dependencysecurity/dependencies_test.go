@@ -90,5 +90,14 @@ func TestJWTDependencyRejectsOversizedAndInvalidTokens(t *testing.T) {
 	if err == nil || !ok || validation.Errors&jwt.ValidationErrorSignatureInvalid == 0 || validation.Errors&jwt.ValidationErrorExpired != 0 || (token != nil && token.Valid) {
 		t.Fatalf("bad signature must be rejected before expiration handling: token=%#v error=%v", token, err)
 	}
+	good := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{"exp": time.Now().Add(time.Hour).Unix(), "sub": "synthetic-consumer"})
+	valid, err := good.SignedString([]byte("synthetic-correct-key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	accepted, err := jwt.Parse(valid, func(*jwt.Token) (interface{}, error) { return []byte("synthetic-correct-key"), nil })
+	if err != nil || accepted == nil || !accepted.Valid {
+		t.Fatalf("valid signed token rejected: %v", err)
+	}
 	t.Logf("JWT v4 fixed behavior: oversized input rejected with %d bytes; invalid signature rejected first", bytesPerToken)
 }
