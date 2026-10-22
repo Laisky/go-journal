@@ -27,7 +27,7 @@ const (
 type option struct {
 	storageGuard StorageGuard
 
-	logger       *utils.LoggerType
+	logger       utils.LoggerItf
 	bufDirPath   string
 	root         *os.Root // borrowed until NewJournal duplicates it
 	bufSizeBytes int64
@@ -61,9 +61,18 @@ func newOption() *option {
 
 type OptionFunc func(*option) error
 
+// WithLogger sets the journal logger, preserving the concrete logger API.
 func WithLogger(logger *utils.LoggerType) OptionFunc {
+	return WithLoggerInterface(logger)
+}
+
+// WithLoggerInterface accepts go-utils factory results and custom logger implementations.
+func WithLoggerInterface(logger utils.LoggerItf) OptionFunc {
 	return func(o *option) error {
 		if logger == nil {
+			return fmt.Errorf("logger cannot be nil")
+		}
+		if concrete, ok := logger.(*utils.LoggerType); ok && concrete == nil {
 			return fmt.Errorf("logger cannot be nil")
 		}
 

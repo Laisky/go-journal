@@ -9,6 +9,11 @@
       "TestRegressionIDWritePropagatesFlushError",
       "TestRegressionFailedIDWriteIsNotCommitted",
       "TestSelectiveRecognizesOnlyValidatedEnvelopes",
+      "TestRegressionLoggerExportedConcreteType",
+      "TestRegressionLoggerInterfaceWorkflow",
+      "TestRegressionLoggerRejectsNil",
+      "TestLoggerConcreteAndInterfaceCallers",
+      "TestJournalRootLockExcludesBothHistoricalLinuxLockKinds",
       "TestCodec",
       "TestCodecBufferedCompletenessControls",
       "TestRetainedReplayDoesNotCleanBeforeExplicitAcknowledgedRetirement",
@@ -18,6 +23,21 @@
       "TestRetainedRecoveryUsesOwnedRootAfterRename",
       "TestClosedRecoveryArchiveExactRawOwnershipAndPreservation",
       "TestClosedRecoveryArchiveRejectsFreshOversizedTruncatedOrChangedSource"
+    ]
+  },
+  {
+    "package": "./tests/dependencysecurity",
+    "tests": [
+      "TestSettingsConsumerContract",
+      "TestJWTDependencyRejectsOversizedAndInvalidTokens",
+      "TestS2DictionaryRejectsRepeatOverflow",
+      "TestGoldmarkRejectsEncodedDangerousScheme",
+      "TestProtoJSONRejectsMissingValue",
+      "TestSFTPPacketLengthIsBounded",
+      "TestConsulClientSetsContentType",
+      "TestRetryableHTTPRedactsURLPassword",
+      "TestPromHTTPBoundsUnknownMethodLabels",
+      "TestLogrusWriterAcceptsLongLine"
     ]
   }
 ]
