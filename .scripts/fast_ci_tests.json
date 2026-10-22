@@ -8,7 +8,27 @@
       "TestRegressionDataWritePropagatesFlushError",
       "TestRegressionIDWritePropagatesFlushError",
       "TestRegressionFailedIDWriteIsNotCommitted",
-      "TestSelectiveRecognizesOnlyValidatedEnvelopes"
+      "TestSelectiveRecognizesOnlyValidatedEnvelopes",
+      "TestRegressionLoggerExportedConcreteType",
+      "TestRegressionLoggerInterfaceWorkflow",
+      "TestRegressionLoggerRejectsNil",
+      "TestLoggerConcreteAndInterfaceCallers",
+      "TestJournalRootLockExcludesBothHistoricalLinuxLockKinds"
+    ]
+  },
+  {
+    "package": "./tests/dependencysecurity",
+    "tests": [
+      "TestSettingsConsumerContract",
+      "TestJWTDependencyRejectsOversizedAndInvalidTokens",
+      "TestS2DictionaryRejectsRepeatOverflow",
+      "TestGoldmarkRejectsEncodedDangerousScheme",
+      "TestProtoJSONRejectsMissingValue",
+      "TestSFTPPacketLengthIsBounded",
+      "TestConsulClientSetsContentType",
+      "TestRetryableHTTPRedactsURLPassword",
+      "TestPromHTTPBoundsUnknownMethodLabels",
+      "TestLogrusWriterAcceptsLongLine"
     ]
   }
 ]
