@@ -9,7 +9,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	journal "github.com/Laisky/go-journal"
+	journal "github.com/Laisky/go-journal/v2"
 )
 
 func TestDownstreamReceiptIsRequired(t *testing.T) {

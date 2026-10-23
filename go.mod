@@ -1,4 +1,4 @@
-module github.com/Laisky/go-journal
+module github.com/Laisky/go-journal/v2
 
 go 1.27.0
 

@@ -16,19 +16,6 @@ import (
 	"github.com/pkg/errors"
 )
 
-// Logger is the default journal logger. Its concrete type is retained for callers
-// that use the embedded zap.Logger.
-var Logger *utils.LoggerType
-
-func init() {
-	logger, err := utils.NewConsoleLoggerWithName("go-journal", "info")
-	if err != nil {
-		utils.Logger.Panic("new journal logger", zap.Error(err))
-	}
-	// The pinned go-utils constructor builds a *LoggerType behind its interface.
-	Logger = logger.(*utils.LoggerType)
-}
-
 // Journal redo log consist by msgs and committed ids
 type Journal struct {
 	dataSequence            atomic.Uint64
@@ -518,7 +505,7 @@ func (j *Journal) refreshLegacyLoader(ctx context.Context) {
 			zap.Strings("data_files", j.fsStat.OldDataFnames),
 			zap.Strings("ids_files", j.fsStat.OldIDsDataFnames),
 		)
-		j.legacy = NewLegacyLoaderWithLoggerInterface(
+		j.legacy = NewLegacyLoader(
 			ctx,
 			j.logger,
 			j.fsStat.OldDataFnames,

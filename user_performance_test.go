@@ -6,7 +6,7 @@ import (
 	"os"
 	"testing"
 
-	journal "github.com/Laisky/go-journal"
+	journal "github.com/Laisky/go-journal/v2"
 )
 
 // Same caller workload on both revisions. Setup, warm-up and final cleanup are

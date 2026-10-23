@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	journal "github.com/Laisky/go-journal"
+	journal "github.com/Laisky/go-journal/v2"
 )
 
 // Each fixed batch has 8192 refreshes and 8192 membership queries. The hot-key
@@ -24,9 +24,6 @@ func BenchmarkPublicTTLGeneration(b *testing.B) {
 	} {
 		b.Run(c.name, func(b *testing.B) {
 			b.StopTimer()
-			if err := journal.Logger.ChangeLevel("error"); err != nil {
-				b.Fatal(err)
-			}
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			s := journal.NewInt64SetWithTTL(ctx, time.Hour)

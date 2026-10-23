@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	journal "github.com/Laisky/go-journal"
+	journal "github.com/Laisky/go-journal/v2"
 )
 
 func TestPerformanceContractConcurrentRefresh(t *testing.T) {

@@ -5,7 +5,7 @@ package journal_test
 import (
 	"context"
 	"fmt"
-	journal "github.com/Laisky/go-journal"
+	journal "github.com/Laisky/go-journal/v2"
 	"os"
 	"os/exec"
 	"path/filepath"

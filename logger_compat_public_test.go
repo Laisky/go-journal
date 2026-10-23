@@ -5,16 +5,13 @@ import (
 	"sync"
 	"testing"
 
-	journal "github.com/Laisky/go-journal"
+	journal "github.com/Laisky/go-journal/v2"
 	utils "github.com/Laisky/go-utils"
 	"github.com/Laisky/zap"
 	"github.com/Laisky/zap/zapcore"
 )
 
 func TestRegressionLoggerInterfaceWorkflow(t *testing.T) {
-	if journal.Logger == nil {
-		t.Fatal("default journal logger was not initialized")
-	}
 	var entries []zapcore.Entry
 	var entriesMu sync.Mutex
 	logger, err := utils.NewConsoleLoggerWithName("journal-consumer", "info",
@@ -27,7 +24,7 @@ func TestRegressionLoggerInterfaceWorkflow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	j, err := journal.NewJournal(journal.WithLoggerInterface(logger),
+	j, err := journal.NewJournal(journal.WithLogger(logger),
 		journal.WithBufDirPath(t.TempDir()), journal.WithIsAggresiveGC(false))
 	if err != nil {
 		t.Fatal(err)
@@ -56,8 +53,8 @@ func TestRegressionLoggerInterfaceWorkflow(t *testing.T) {
 }
 
 func TestRegressionLoggerRejectsNil(t *testing.T) {
-	for _, logger := range []utils.LoggerItf{nil, (*utils.LoggerType)(nil)} {
-		if _, err := journal.NewJournal(journal.WithLoggerInterface(logger)); err == nil {
+	for _, logger := range []journal.Logger{nil, (*zap.Logger)(nil), (*callerLogger)(nil)} {
+		if _, err := journal.NewJournal(journal.WithLogger(logger)); err == nil {
 			t.Fatal("nil logger was accepted")
 		}
 	}

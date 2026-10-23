@@ -121,7 +121,7 @@ func TestLegacy(t *testing.T) {
 		defer cancel()
 		legacy := NewLegacyLoader(
 			ctx,
-			Logger,
+			defaultLogger,
 			[]string{dataFp1.Name(), dataFp2.Name()},
 			[]string{idsFp1.Name(), idsFp2.Name()},
 			isCompress,
@@ -182,7 +182,7 @@ func TestEmptyLegacy(t *testing.T) {
 		ctx := context.Background()
 		legacy := NewLegacyLoader(
 			ctx,
-			Logger,
+			defaultLogger,
 			[]string{},
 			[]string{},
 			isCompress,

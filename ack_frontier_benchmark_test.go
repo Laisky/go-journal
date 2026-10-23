@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	journal "github.com/Laisky/go-journal"
+	journal "github.com/Laisky/go-journal/v2"
 )
 
 // Full public-API recovery scan over real ACK files. Fixture construction uses
@@ -27,9 +27,6 @@ func BenchmarkPublicACKFrontier(b *testing.B) {
 	} {
 		b.Run(c.name, func(b *testing.B) {
 			b.StopTimer()
-			if err := journal.Logger.ChangeLevel("error"); err != nil {
-				b.Fatal(err)
-			}
 			dir := b.TempDir()
 			open := func() *journal.Journal {
 				j, err := journal.NewJournal(journal.WithBufDirPath(dir), journal.WithIsCompress(c.gzip), journal.WithIsAggresiveGC(false), journal.WithBufSizeByte(65536), journal.WithFlushInterval(time.Hour), journal.WithRotateCheckInterval(time.Hour))

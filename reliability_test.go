@@ -106,7 +106,7 @@ func TestRegressionLegacyMaximumAcrossFiles(t *testing.T) {
 	first, last := filepath.Join(dir, "first.ids"), filepath.Join(dir, "last.ids")
 	regressionWriteIDs(t, first, 3, 99, 4)
 	regressionWriteIDs(t, last, 2, 7)
-	loader := &LegacyLoader{logger: Logger, idsFNames: []string{first, last}}
+	loader := &LegacyLoader{logger: defaultLogger, idsFNames: []string{first, last}}
 	got, err := loader.LoadMaxId()
 	if err != nil {
 		t.Fatal(err)
@@ -252,7 +252,7 @@ func TestRegressionLegacyCleanupRequiresSuccessfulFlush(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	j.legacy = &LegacyLoader{logger: Logger, ids: NewInt64Set(), dataFNames: []string{old, current}, dataFilesLen: 1, dataFileIdx: 0}
+	j.legacy = &LegacyLoader{logger: defaultLogger, ids: NewInt64Set(), dataFNames: []string{old, current}, dataFilesLen: 1, dataFileIdx: 0}
 	j.dataEnc, err = NewDataEncoder(regressionReadOnlyFile(t), false)
 	if err != nil {
 		t.Fatal(err)
@@ -287,7 +287,7 @@ func TestRegressionUnreadableLegacyIsNotEOF(t *testing.T) {
 			}
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
-			l := NewLegacyLoader(ctx, Logger, []string{old, current}, nil, false, time.Minute)
+			l := NewLegacyLoader(ctx, defaultLogger, []string{old, current}, nil, false, time.Minute)
 			for attempt := 0; attempt < 2; attempt++ {
 				err := l.Load(&Data{})
 				if err == nil || err == io.EOF {

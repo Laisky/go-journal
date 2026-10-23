@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	journal "github.com/Laisky/go-journal"
+	journal "github.com/Laisky/go-journal/v2"
 )
 
 // All fixtures use public APIs and ordinary filesystem operations. The oracle

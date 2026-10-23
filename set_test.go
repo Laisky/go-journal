@@ -35,7 +35,7 @@ func TestNewInt64Set(t *testing.T) {
 
 func TestInt64SetWithTTL(t *testing.T) {
 	var err error
-	if err = Logger.ChangeLevel("error"); err != nil {
+	if err = setTestLogLevel("error"); err != nil {
 		t.Fatalf("set level: %+v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -149,7 +149,7 @@ BenchmarkInt64SetWithTTL/parallel-4      2000000              4139 ns/op        
 */
 func BenchmarkInt64SetWithTTL(b *testing.B) {
 	var err error
-	if err = Logger.ChangeLevel("error"); err != nil {
+	if err = setTestLogLevel("error"); err != nil {
 		b.Fatalf("set level: %+v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())

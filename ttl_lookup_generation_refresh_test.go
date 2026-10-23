@@ -6,7 +6,7 @@ import (
 	"testing/synctest"
 	"time"
 
-	journal "github.com/Laisky/go-journal"
+	journal "github.com/Laisky/go-journal/v2"
 )
 
 // Membership in the current generation alone cannot prove refresh correctness:

@@ -1,17 +1,16 @@
 package journal_test
 
 import (
-	"reflect"
+	journal "github.com/Laisky/go-journal/v2"
+	"github.com/Laisky/zap"
 	"testing"
-
-	journal "github.com/Laisky/go-journal"
-	utils "github.com/Laisky/go-utils"
 )
 
 func TestRegressionLoggerExportedConcreteType(t *testing.T) {
-	got := reflect.TypeOf(&journal.Logger).Elem()
-	want := reflect.TypeOf((*utils.LoggerType)(nil))
-	if got != want {
-		t.Fatalf("exported Logger type changed: got %v, want %v; concrete callers lose the embedded zap.Logger", got, want)
+	// Producers retain their concrete API; the journal needs only its own interface.
+	var child *zap.Logger = zap.NewNop().Named("child").With(zap.String("field", "kept")).WithOptions()
+	var sink journal.Logger = child
+	if sink == nil {
+		t.Fatal("typed logger cannot be injected")
 	}
 }

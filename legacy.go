@@ -23,7 +23,7 @@ type LegacyLoader struct {
 	// acquire write lock during reset.
 	// acquire read lock during read/write data/ids files.
 	sync.RWMutex
-	logger utils.LoggerItf
+	logger Logger
 	disk   journalFS
 
 	dataFNames, idsFNames []string
@@ -37,23 +37,16 @@ type LegacyLoader struct {
 	cleanup                   *legacyCleanupPlan
 }
 
-// NewLegacyLoader create new LegacyLoader
+// NewLegacyLoader creates a replay reader using the caller's logging sink.
 func NewLegacyLoader(ctx context.Context,
-	logger *utils.LoggerType,
+	logger Logger,
 	dataFNames, idsFNames []string,
 	isCompress bool,
 	committedIDTTL time.Duration,
 ) *LegacyLoader {
-	return NewLegacyLoaderWithLoggerInterface(ctx, logger, dataFNames, idsFNames, isCompress, committedIDTTL)
-}
-
-// NewLegacyLoaderWithLoggerInterface accepts a go-utils interface logger.
-func NewLegacyLoaderWithLoggerInterface(ctx context.Context,
-	logger utils.LoggerItf,
-	dataFNames, idsFNames []string,
-	isCompress bool,
-	committedIDTTL time.Duration,
-) *LegacyLoader {
+	if loggerIsNil(logger) {
+		panic("journal: nil logger")
+	}
 	l := &LegacyLoader{
 		logger:        logger,
 		dataFNames:    dataFNames,
@@ -404,7 +397,7 @@ func maxDataIDWithBuffers(name string, newest func() bool, buffers *scanReaderBu
 				if preserveErr := preserveIncomplete(name, disk); preserveErr != nil {
 					return 0, preserveErr
 				}
-				Logger.Warn("incomplete final append retained for inspection", zap.String("file", name), zap.Error(err))
+				defaultLogger.Warn("incomplete final append retained for inspection", zap.String("file", name), zap.Error(err))
 				return high, nil
 			}
 			return 0, errors.Wrapf(err, "read recovery data %s", name)

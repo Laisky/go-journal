@@ -18,7 +18,7 @@ import (
 	"syscall"
 	"time"
 
-	journal "github.com/Laisky/go-journal"
+	journal "github.com/Laisky/go-journal/v2"
 )
 
 type result struct {
@@ -268,9 +268,6 @@ func frontier(dir string, onlyACK bool) (fixture, error) {
 func run(n int, selected string, output io.Writer) error {
 	if n < 32 || n > 4096 {
 		return fmt.Errorf("iterations must be in [32,4096]")
-	}
-	if err := journal.Logger.ChangeLevel("error"); err != nil {
-		return err
 	}
 	names := []string{"staging-256k", "staging-1m", "staging-overflow", "ttl-hits", "ttl-refresh", "ack-import", "ack-maximum", "directory", "data-segments", "ack-segments"}
 	results := map[string]result{}

@@ -10,7 +10,7 @@ import (
 	"testing/synctest"
 	"time"
 
-	journal "github.com/Laisky/go-journal"
+	journal "github.com/Laisky/go-journal/v2"
 )
 
 func TestBehaviorFractionalTTLDoesNotExpireEarly(t *testing.T) {

@@ -1,7 +1,7 @@
 # Go-Journal
 
-[![Go checks](https://github.com/Laisky/go-journal/actions/workflows/go.yml/badge.svg?branch=master)](https://github.com/Laisky/go-journal/actions/workflows/go.yml)
-[![Behavior and crash recovery](https://github.com/Laisky/go-journal/actions/workflows/behavior.yml/badge.svg?branch=master)](https://github.com/Laisky/go-journal/actions/workflows/behavior.yml)
+[![Go checks](https://github.com/Laisky/go-journal/v2/actions/workflows/go.yml/badge.svg?branch=master)](https://github.com/Laisky/go-journal/v2/actions/workflows/go.yml)
+[![Behavior and crash recovery](https://github.com/Laisky/go-journal/v2/actions/workflows/behavior.yml/badge.svg?branch=master)](https://github.com/Laisky/go-journal/v2/actions/workflows/behavior.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 **An embedded, disk-backed journal for Go message pipelines.** Store records and
@@ -44,7 +44,7 @@ platforms and remote filesystems are not qualified by those tests.
 From your application's Go module, install the revision documented here:
 
 ```sh
-go get github.com/Laisky/go-journal@b0c35437293efa4319db1fc588ce18edcf6cdfd3
+go get github.com/Laisky/go-journal/v2@b0c35437293efa4319db1fc588ce18edcf6cdfd3
 ```
 
 This commit includes the recovery and rejected-payload fixes described below.
@@ -59,7 +59,7 @@ To try the example in a separate module:
 mkdir journal-demo
 cd journal-demo
 go mod init example.com/journal-demo
-go get github.com/Laisky/go-journal@b0c35437293efa4319db1fc588ce18edcf6cdfd3
+go get github.com/Laisky/go-journal/v2@b0c35437293efa4319db1fc588ce18edcf6cdfd3
 ```
 
 ## Quick start
@@ -85,7 +85,7 @@ import (
 	"log"
 	"os"
 
-	journal "github.com/Laisky/go-journal"
+	journal "github.com/Laisky/go-journal/v2"
 )
 
 func main() {
@@ -384,7 +384,7 @@ its source.
 
 ## Contributing and support
 
-Open an [issue](https://github.com/Laisky/go-journal/issues) with the exact revision,
+Open an [issue](https://github.com/Laisky/go-journal/v2/issues) with the exact revision,
 Go version, OS/filesystem, relevant options, a minimal reproducer, and expected
 versus observed behavior. Remove secrets and production payloads from reports.
 For a sensitive security finding, arrange a private channel with the maintainer
@@ -398,8 +398,12 @@ improvements. Update the relevant contract and this README when behavior changes
 Do not weaken an oracle or count a compilation failure as a reproduced defect.
 
 Maintained by [Laisky](https://github.com/Laisky), with contributions through
-[pull requests](https://github.com/Laisky/go-journal/pulls).
+[pull requests](https://github.com/Laisky/go-journal/v2/pulls).
 
 ## License
 
 [MIT](LICENSE). Copyright and license terms are preserved in the license file.
+
+## Version 2 source migration
+
+This candidate changes the module path and logging contract. Read [the v2 migration notes](docs/v2-migration.md) before adopting it. Published v1 versions and stored records remain unchanged.

@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	journal "github.com/Laisky/go-journal"
+	journal "github.com/Laisky/go-journal/v2"
 )
 
 // The complete exported snapshot/preparation operation, not an in-memory
@@ -17,9 +17,6 @@ func BenchmarkPublicDirectorySnapshot(b *testing.B) {
 	for _, count := range []int{16, 256, 4096} {
 		b.Run(fmt.Sprint(count), func(b *testing.B) {
 			b.StopTimer()
-			if err := journal.Logger.ChangeLevel("error"); err != nil {
-				b.Fatal(err)
-			}
 			dir := b.TempDir()
 			for n := 0; n < count/2; n++ {
 				for _, suffix := range []string{"buf", "ids"} {

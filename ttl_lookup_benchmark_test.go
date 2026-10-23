@@ -3,6 +3,7 @@ package journal_test
 import (
 	"context"
 	"fmt"
+	"github.com/Laisky/zap"
 	"io"
 	"os"
 	"path/filepath"
@@ -11,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	journal "github.com/Laisky/go-journal"
+	journal "github.com/Laisky/go-journal/v2"
 )
 
 // Each serial operation contains 8192 public membership queries. Parallel
@@ -21,9 +22,6 @@ func BenchmarkPublicACKMembership(b *testing.B) {
 	for _, name := range []string{"current-hits", "no-old-misses", "parallel-hits"} {
 		b.Run(name, func(b *testing.B) {
 			b.StopTimer()
-			if err := journal.Logger.ChangeLevel("error"); err != nil {
-				b.Fatal(err)
-			}
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			s := journal.NewInt64SetWithTTL(ctx, time.Hour)
@@ -83,9 +81,6 @@ func BenchmarkPublicACKReplay(b *testing.B) {
 	} {
 		b.Run(c.name, func(b *testing.B) {
 			b.StopTimer()
-			if err := journal.Logger.ChangeLevel("error"); err != nil {
-				b.Fatal(err)
-			}
 			dir := b.TempDir()
 			suffix := ""
 			if c.gzip {
@@ -127,7 +122,7 @@ func BenchmarkPublicACKReplay(b *testing.B) {
 			}
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
-			loader := journal.NewLegacyLoader(ctx, journal.Logger, []string{dataName}, []string{ackName}, c.gzip, time.Hour)
+			loader := journal.NewLegacyLoader(ctx, zap.NewNop(), []string{dataName}, []string{ackName}, c.gzip, time.Hour)
 			b.ReportAllocs()
 			b.ResetTimer()
 			pprof.Do(ctx, pprof.Labels("phase", "public-ack-replay"), func(context.Context) {
