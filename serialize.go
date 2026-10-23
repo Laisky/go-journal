@@ -15,7 +15,6 @@ import (
 	"os"
 	"sync"
 
-	utils "github.com/Laisky/go-utils"
 	"github.com/Laisky/zap"
 	"github.com/RoaringBitmap/roaring"
 	"github.com/pkg/errors"
@@ -28,7 +27,6 @@ var (
 )
 
 const (
-	defaultCompressNBlocks = 8
 	// Readers need bounded lookahead, not the 4 MiB writer/compressor buffer.
 	// Individual records may still exceed this size.
 	readBufferSize = 64 << 10
@@ -49,7 +47,7 @@ type DataEncoder struct {
 	BaseSerializer
 	// writeChan chan interface{}
 	writer   *msgp.Writer
-	gzWriter utils.CompressorItf
+	gzWriter *gzipMemberWriter
 	record   recordStage // complete private record, protected by encoder mutex
 	writeErr error       // an incomplete live append must not accept a later record
 }
@@ -68,7 +66,7 @@ type IdsEncoder struct {
 	baseID   int64
 	word     [8]byte // protected by the encoder mutex
 	writer   *bufio.Writer
-	gzWriter utils.CompressorItf
+	gzWriter *gzipMemberWriter
 }
 
 // IdsDecoder ids deserializer
@@ -89,12 +87,7 @@ func NewDataEncoder(fp *os.File, isCompress bool) (enc *DataEncoder, err error) 
 		},
 	}
 	if isCompress {
-		if enc.gzWriter, err = utils.NewGZCompressor(
-			fp,
-			utils.WithCompressBufSizeByte(BufSize),
-			utils.WithCompressLevel(gzip.BestSpeed),
-			utils.WithPGzipNBlocks(defaultCompressNBlocks),
-		); err != nil {
+		if enc.gzWriter, err = newGzipMemberWriter(fp); err != nil {
 			return nil, err
 		}
 		enc.writer = msgp.NewWriterSize(enc.gzWriter, dataWriteBufferSize)
@@ -113,11 +106,7 @@ func NewIdsEncoder(fp *os.File, isCompress bool) (enc *IdsEncoder, err error) {
 		baseID: -1,
 	}
 	if isCompress {
-		if enc.gzWriter, err = utils.NewGZCompressor(
-			fp,
-			utils.WithCompressBufSizeByte(BufSize),
-			utils.WithCompressLevel(gzip.BestSpeed),
-		); err != nil {
+		if enc.gzWriter, err = newGzipMemberWriter(fp); err != nil {
 			return nil, err
 		}
 		enc.writer = bufio.NewWriterSize(enc.gzWriter, BufSize)

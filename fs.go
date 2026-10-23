@@ -13,7 +13,6 @@ import (
 	"strings"
 	"time"
 
-	utils "github.com/Laisky/go-utils"
 	"github.com/Laisky/zap"
 	"github.com/coreos/etcd/pkg/fileutil"
 	"github.com/pkg/errors"
@@ -136,7 +135,7 @@ func prepareNewBufFile(disk journalFS, dirPath string, oldFsStat *bufFileStat, i
 
 	// generate new buf data file name
 	// `latestxxxFName` means new buf file name now
-	now := utils.Clock.GetUTCNow()
+	now := time.Now().UTC()
 	if latestDataFName == "" {
 		latestDataFName = now.Format(defaultFileNameTimeLayout) + "_00000001.buf"
 	} else {

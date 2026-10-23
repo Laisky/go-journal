@@ -22,11 +22,14 @@
       "TestGuardedJournalEncodableOnlyRunsOnce",
       "TestRetainedRecoveryUsesOwnedRootAfterRename",
       "TestClosedRecoveryArchiveExactRawOwnershipAndPreservation",
-      "TestClosedRecoveryArchiveRejectsFreshOversizedTruncatedOrChangedSource"
+      "TestClosedRecoveryArchiveRejectsFreshOversizedTruncatedOrChangedSource",
+      "TestGzipMembersRemainCompleteAcrossFlush",
+      "TestGzipFooterRemainsBufferedUntilFlush",
+      "TestGzipFlushDoesNotAcknowledgeFailedOutput"
     ]
   },
   {
-    "package": "./tests/dependencysecurity",
+    "package": ".",
     "tests": [
       "TestSettingsConsumerContract",
       "TestJWTDependencyRejectsOversizedAndInvalidTokens",
@@ -38,6 +41,7 @@
       "TestRetryableHTTPRedactsURLPassword",
       "TestPromHTTPBoundsUnknownMethodLabels",
       "TestLogrusWriterAcceptsLongLine"
-    ]
+    ],
+    "module_dir": "tests/dependencysecurity"
   }
 ]

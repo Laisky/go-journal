@@ -2,6 +2,7 @@ package journal
 
 import (
 	"bufio"
+	"github.com/ugorji/go/codec"
 	"io"
 	"io/ioutil"
 	"math"
@@ -9,9 +10,6 @@ import (
 	"reflect"
 	"strings"
 	"testing"
-
-	utils "github.com/Laisky/go-utils"
-	"github.com/ugorji/go/codec"
 )
 
 func TestSerializer(t *testing.T) {
@@ -259,7 +257,7 @@ func TestCodec(t *testing.T) {
 	)
 	want := make([]string, 0, 100)
 	for i := 0; i < 100; i++ {
-		msg = "12345" + utils.RandomStringWithLength(200-i) + "67890"
+		msg = "12345" + randomTestString(200-i) + "67890"
 		want = append(want, msg)
 		data["id"] = i
 		data["message"] = map[string]interface{}{"log": msg}

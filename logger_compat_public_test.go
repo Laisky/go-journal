@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	journal "github.com/Laisky/go-journal/v2"
-	utils "github.com/Laisky/go-utils"
 	"github.com/Laisky/zap"
 	"github.com/Laisky/zap/zapcore"
 )
@@ -14,7 +13,7 @@ import (
 func TestRegressionLoggerInterfaceWorkflow(t *testing.T) {
 	var entries []zapcore.Entry
 	var entriesMu sync.Mutex
-	logger, err := utils.NewConsoleLoggerWithName("journal-consumer", "info",
+	logger, err := zap.NewProduction(
 		zap.Hooks(func(entry zapcore.Entry) error {
 			entriesMu.Lock()
 			entries = append(entries, entry)
@@ -24,6 +23,7 @@ func TestRegressionLoggerInterfaceWorkflow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	logger = logger.Named("journal-consumer")
 	j, err := journal.NewJournal(journal.WithLogger(logger),
 		journal.WithBufDirPath(t.TempDir()), journal.WithIsAggresiveGC(false))
 	if err != nil {

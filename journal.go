@@ -7,11 +7,12 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	utils "github.com/Laisky/go-utils"
 	"github.com/Laisky/zap"
 	"github.com/pkg/errors"
 )
@@ -41,7 +42,7 @@ type Journal struct {
 	ownedRoot      *os.Root
 	ownedDirectory *rootedDirectory
 	disk           journalFS
-	legacyLock     *utils.Mutex
+	legacyLock     atomic.Bool
 	dataFp, idsFp  *os.File // current writting journal file
 	fsStat         *bufFileStat
 	legacy         *LegacyLoader
@@ -54,9 +55,8 @@ type Journal struct {
 // NewJournal create new Journal
 func NewJournal(opts ...OptionFunc) (j *Journal, err error) {
 	j = &Journal{
-		stopChan:   make(chan struct{}),
-		legacyLock: utils.NewMutex(),
-		option:     newOption(),
+		stopChan: make(chan struct{}),
+		option:   newOption(),
 	}
 
 	for _, optf := range opts {
@@ -397,7 +397,7 @@ func (j *Journal) isReadyToRotate() (ok bool) {
 		j.logger.Error("try to get file stat got error", zap.Error(err))
 		ok = false
 	} else if fi.Size() > j.bufSizeBytes ||
-		utils.Clock.GetUTCNow().Sub(j.lastRotateAt) > j.rotateDuration {
+		time.Now().UTC().Sub(j.lastRotateAt) > j.rotateDuration {
 		ok = true
 	}
 
@@ -485,7 +485,7 @@ func (j *Journal) rotateUnderGuard(ctx context.Context) error {
 	if scan {
 		j.refreshLegacyLoader(ctx)
 	}
-	j.lastRotateAt = utils.Clock.GetUTCNow()
+	j.lastRotateAt = time.Now().UTC()
 	var closeErr error
 	for _, fp := range []*os.File{oldData, oldIDs} {
 		if fp != nil {
@@ -517,7 +517,10 @@ func (j *Journal) refreshLegacyLoader(ctx context.Context) {
 	} else {
 		j.legacy.Reset(j.fsStat.OldDataFnames, j.fsStat.OldIDsDataFnames)
 		if j.isAggresiveGC {
-			utils.TriggerGC()
+			go func() {
+				runtime.GC()
+				debug.FreeOSMemory()
+			}()
 		}
 	}
 	j.snapshotDataSequence.Store(j.dataSequence.Load())
@@ -534,19 +537,19 @@ func (j *Journal) LockLegacy() bool {
 	default:
 	}
 	j.logger.Debug("call LockLegacy")
-	return j.legacyLock.TryLock()
+	return j.legacyLock.CompareAndSwap(false, true)
 }
 
 // IsLegacyRunning check whether running legacy loading
 func (j *Journal) IsLegacyRunning() bool {
 	j.logger.Debug("call IsLegacyRunning")
-	return j.legacyLock.IsLocked()
+	return j.legacyLock.Load()
 }
 
 // UnLockLegacy release legacy lock
 func (j *Journal) UnLockLegacy() bool {
 	j.logger.Debug("call UnLockLegacy")
-	return j.legacyLock.TryRelease()
+	return j.legacyLock.CompareAndSwap(true, false)
 }
 
 // GetMetric monitor inteface

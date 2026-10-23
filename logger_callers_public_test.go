@@ -3,7 +3,6 @@ package journal_test
 import (
 	"context"
 	journal "github.com/Laisky/go-journal/v2"
-	utils "github.com/Laisky/go-utils"
 	"github.com/Laisky/zap"
 	"github.com/Laisky/zap/zapcore"
 	"sync"
@@ -35,7 +34,7 @@ var _ journal.Logger = (*callerLogger)(nil)
 var _ journal.Logger = (*zap.Logger)(nil)
 
 func TestLoggerConcreteAndInterfaceCallers(t *testing.T) {
-	factory, err := utils.NewConsoleLoggerWithName("sdk-caller", "error")
+	factory, err := zap.NewProduction()
 	if err != nil {
 		t.Fatal(err)
 	}

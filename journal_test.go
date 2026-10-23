@@ -12,8 +12,6 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-
-	utils "github.com/Laisky/go-utils"
 )
 
 func BenchmarkLock(b *testing.B) {
@@ -40,7 +38,7 @@ func BenchmarkLock(b *testing.B) {
 func fakedata(length int) map[int64]interface{} {
 	m := make(map[int64]interface{}, length)
 	for i := 0; i < length; i++ {
-		m[int64(i)] = utils.RandomStringWithLength(100 + i)
+		m[int64(i)] = randomTestString(100 + i)
 	}
 
 	return m

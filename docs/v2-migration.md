@@ -11,3 +11,5 @@ Nil implementations are rejected, including typed nils. Reflection is confined t
 The interface shape also matches current `go-utils/v6/log.LoggerT`, but combining that module with old v1 root utilities currently exposes a separate generic-deque dependency conflict. This PR does not claim that mixed dependency graph works.
 
 Source integration uses immutable dependency revisions and local replacements only while qualifying this unmerged candidate. A coordinated version/branch and merge decision is required before release or consumer adoption.
+
+The runtime module no longer imports the broad utility SDK. Replay locking uses the same compare-and-swap transitions directly; timestamps use UTC wall time without an SDK background clock; opt-in GC remains nonblocking with the same collection calls. A private gzip-member writer preserves the standard gzip algorithm, buffering and footer/reset boundaries. The existing 10 SDK/dependency-security fixtures have an independent test module and still execute in the same CI job (all original 31 tests plus three gzip regressions), without becoming consumer runtime dependencies.

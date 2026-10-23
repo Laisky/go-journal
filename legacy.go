@@ -8,7 +8,6 @@ import (
 	"sync"
 	"time"
 
-	utils "github.com/Laisky/go-utils"
 	"github.com/Laisky/zap"
 	"github.com/pkg/errors"
 	"github.com/tinylib/msgp/msgp"
@@ -217,7 +216,7 @@ func (l *LegacyLoader) LoadMaxId() (maxId int64, err error) {
 	l.RLock()
 	defer l.RUnlock()
 	l.logger.Debug("LoadMaxId...")
-	startTs := utils.Clock.GetUTCNow()
+	startTs := time.Now().UTC()
 	var ackBuffers scanIDBuffers
 	for _, name := range l.idsFNames {
 		var id int64
@@ -256,7 +255,7 @@ func (l *LegacyLoader) LoadMaxId() (maxId int64, err error) {
 
 	l.logger.Debug("load max id done",
 		zap.Int64("max_id", maxId),
-		zap.Float64("sec", utils.Clock.GetUTCNow().Sub(startTs).Seconds()))
+		zap.Float64("sec", time.Now().UTC().Sub(startTs).Seconds()))
 	return maxId, nil
 }
 

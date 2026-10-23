@@ -3,7 +3,7 @@ import unittest
 import sys
 import tempfile
 from pathlib import Path
-from fast_ci import run, validate
+from fast_ci import module_root, run, validate
 
 
 class TestReceipts(unittest.TestCase):
@@ -51,6 +51,33 @@ class TestReceipts(unittest.TestCase):
                 run([sys.executable, "-c", "import time; time.sleep(10)"], Path(directory), "timeout", records, timeout=0.1)
             self.assertIsNone(records[0]["exit_code"])
             self.assertIn("timeout", records[0]["error"])
+
+
+class TestModuleRoots(unittest.TestCase):
+    def test_nested_module_is_explicit(self):
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name)
+            (root / "go.mod").write_text("module main\n")
+            nested = root / "tests" / "consumer"
+            nested.mkdir(parents=True)
+            (nested / "go.mod").write_text("module consumer\n")
+            self.assertEqual(module_root(root, {}), root.resolve())
+            self.assertEqual(module_root(root, {"module_dir": "tests/consumer"}), nested.resolve())
+
+    def test_missing_and_escaping_modules_fail(self):
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name)
+            for value in ("missing", "../outside", str(root.resolve()), ""):
+                with self.subTest(value=value), self.assertRaises(RuntimeError):
+                    module_root(root, {"module_dir": value})
+
+    def test_command_uses_recorded_module_directory(self):
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name)
+            records = []
+            output = run([sys.executable, "-c", "import os; print(os.getcwd())"], root, "cwd", records, cwd=root)
+            self.assertEqual(Path(output.strip()), root.resolve())
+            self.assertEqual(records[0]["cwd"], str(root))
 
 
 if __name__ == "__main__":
