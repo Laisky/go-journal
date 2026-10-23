@@ -25,7 +25,9 @@
       "TestClosedRecoveryArchiveRejectsFreshOversizedTruncatedOrChangedSource",
       "TestGzipMembersRemainCompleteAcrossFlush",
       "TestGzipFooterRemainsBufferedUntilFlush",
-      "TestGzipFlushDoesNotAcknowledgeFailedOutput"
+      "TestGzipFlushDoesNotAcknowledgeFailedOutput",
+      "TestModuleGraphSecurityFloors",
+      "TestSecurityFloorComparison"
     ]
   },
   {
