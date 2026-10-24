@@ -57,16 +57,13 @@ jobs:
             T="$RUNNER_TEMP/benchmark-$side"
             git worktree add --detach "$T" "$ref"
             git archive --format=tar.gz "$ref" > "$E/$side-source.tar.gz"
-            mkdir -p "$T/tests/benchgate" "$T/tests/e2eperf"
-            cp tests/benchgate/*.go "$T/tests/benchgate/"
-            cp tests/e2eperf/*.go "$T/tests/e2eperf/"
+            python3 tests/benchgate/prepare_harness.py --source . --target "$T" --harness benchgate --harness e2eperf --evidence "$E/$side-harness.json"
             (cd "$T" && go build -mod=readonly -trimpath -o "$E/$side" ./tests/benchgate && go build -mod=readonly -trimpath -o "$E/worker-$side" ./tests/e2eperf)
           done
           if [[ "$PR_BASE" =~ ^[0-9a-f]{40}$ ]] && git cat-file -e "$PR_BASE^{commit}" && git merge-base --is-ancestor "$PIN" "$PR_BASE" && [ "$PR_BASE" != "$PIN" ]; then
             T="$RUNNER_TEMP/benchmark-rolling"
             git worktree add --detach "$T" "$PR_BASE"
-            mkdir -p "$T/tests/benchgate"
-            cp tests/benchgate/*.go "$T/tests/benchgate/"
+            python3 tests/benchgate/prepare_harness.py --source . --target "$T" --harness benchgate --evidence "$E/rolling-harness.json"
             (cd "$T" && go build -mod=readonly -trimpath -o "$E/rolling" ./tests/benchgate)
             printf '%s\n' "$PR_BASE" > "$E/rolling-ref.txt"
           fi
@@ -89,8 +86,7 @@ jobs:
           for probe in copy clock; do
             T="$RUNNER_TEMP/benchmark-negative-$probe"
             git worktree add --detach "$T" "$PIN"
-            mkdir -p "$T/tests/benchgate"
-            cp tests/benchgate/*.go "$T/tests/benchgate/"
+            python3 tests/benchgate/prepare_harness.py --source . --target "$T" --harness benchgate --evidence "$E/negative-$probe-harness.json"
             python3 - "$T" "$probe" <<'PY'
           import pathlib, sys
           root=pathlib.Path(sys.argv[1]); kind=sys.argv[2]

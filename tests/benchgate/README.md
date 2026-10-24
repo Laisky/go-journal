@@ -83,7 +83,14 @@ reviewable, not that these separate production SLO claims have become proven.
 
 Build **the same current** `tests/benchgate/*.go` against the current library and
 pinned/reference library with one compiler and module environment. The workflow
-shows detached-worktree construction. No external Python packages are needed.
+shows detached-worktree construction. Before building each comparison checkout,
+run `prepare_harness.py` as shown there: it detects the checkout's actual v1/v2
+main module, changes only the copied journal import literal, and records the
+source/reference commits and module path. Frozen v1 references are not repinned.
+Logger setup, timing, workloads, assertions and policy thresholds stay identical;
+no additional logger or timing adaptation is needed by these public-API fixtures.
+The same preparation applies to original, rolling and negative-probe worktrees.
+No external Python packages are needed.
 
 ```sh
 export GOTOOLCHAIN=local GOMAXPROCS=4
