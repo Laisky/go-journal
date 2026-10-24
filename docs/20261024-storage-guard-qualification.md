@@ -77,6 +77,10 @@ but honors a configured guard; callers requiring source retention must use
 HTTP ACK cannot certify sink durability. Process-crash acceptance assumes an
 intact persistent filesystem; physical power loss, real-service deployment,
 capacity/exhaustion, operational rollback and published image acceptance remain
-separate. Do not merge this v2 module onto the v1 master line. A deliberate v2
-target, post-retarget checks, release approval, immutable version pin and
-production rollout are still required.
+separate. Do not merge this v2 module onto the v1 master line. On 2026-10-24 the
+separate `v2` branch exists at the original v1 baseline `cba67f2` and PR #16
+is retargeted there. The post-retarget normal Go check
+[40048828965](https://github.com/Laisky/go-journal/actions/runs/40048828965)
+and Snyk status both pass on source+documentation head `1272292`.
+Independent merge/release approval, an immutable v2 tag, coordinated consumer
+pinning, real-service acceptance and production rollout are still required.
