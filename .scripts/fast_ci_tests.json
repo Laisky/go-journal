@@ -27,7 +27,8 @@
       "TestGzipFooterRemainsBufferedUntilFlush",
       "TestGzipFlushDoesNotAcknowledgeFailedOutput",
       "TestModuleGraphSecurityFloors",
-      "TestSecurityFloorComparison"
+      "TestSecurityFloorComparison",
+      "TestStorageGuardRegressionContracts"
     ]
   },
   {
