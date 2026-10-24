@@ -31,6 +31,8 @@ type Journal struct {
 	// acquire write lock when flush/rotate journal legacy.
 	// acquire read lock when read/write journal legacy.
 	sync.RWMutex
+	// Prevent Close from invalidating rooted descriptors during a recovery walk.
+	recoveryMu sync.RWMutex
 	*option
 
 	stopChan       chan struct{}
@@ -149,10 +151,18 @@ func (j *Journal) Close() {
 		close(j.stopChan)
 		j.lifecycleMu.Unlock()
 		j.workers.Wait()
+		j.recoveryMu.Lock()
+		defer j.recoveryMu.Unlock()
 		j.Lock()
 		defer j.Unlock()
-		if err := j.flushLocked(); err != nil {
-			j.logger.Error("flush closing journal", zap.Error(err))
+		if release, err := j.storageGrant("flush", 64<<10); err != nil {
+			// Close has no error result; never bypass a rejected funding boundary.
+			j.logger.Error("journal close flush budget refused", zap.Error(err))
+		} else {
+			if err := j.flushLocked(); err != nil {
+				j.logger.Error("flush closing journal", zap.Error(err))
+			}
+			release()
 		}
 		if j.dataFp != nil {
 			j.dataFp.Close()
@@ -196,15 +206,13 @@ func (j *Journal) initBufDir(ctx context.Context) (err error) {
 
 // Flush flush journal files buffer to file
 func (j *Journal) Flush() error {
-	if j.option != nil && j.storageGuard != nil {
-		release, err := j.storageGuard("flush", 64<<10)
-		if err != nil {
-			return err
-		}
-		defer release()
-	}
 	j.Lock()
 	defer j.Unlock()
+	release, err := j.storageGrant("flush", 64<<10)
+	if err != nil {
+		return err
+	}
+	defer release()
 	select {
 	case <-j.stopChan:
 		return os.ErrClosed
@@ -257,7 +265,19 @@ func (j *Journal) startFlushTrigger(ctx context.Context) {
 	j.logger.Info("start flush trigger", zap.Duration("interval", j.flushInterval))
 	defer j.logger.Info("journal flush exit")
 
-	defer func() { j.Lock(); defer j.Unlock(); j.flushLocked() }()
+	defer func() {
+		j.Lock()
+		defer j.Unlock()
+		release, err := j.storageGrant("flush", 64<<10)
+		if err != nil {
+			j.logger.Error("journal exit flush budget refused", zap.Error(err))
+			return
+		}
+		defer release()
+		if err := j.flushLocked(); err != nil {
+			j.logger.Error("journal exit flush", zap.Error(err))
+		}
+	}()
 	var err error
 	ticker := time.NewTicker(j.flushInterval)
 	defer ticker.Stop()
@@ -268,20 +288,18 @@ func (j *Journal) startFlushTrigger(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			release := func() {}
-			if j.option != nil && j.storageGuard != nil {
-				release, err = j.storageGuard("flush", 64<<10)
-				if err != nil {
-					j.logger.Error("journal flush budget refused", zap.Error(err))
-					continue
-				}
-			}
 			j.Lock()
+			release, grantErr := j.storageGrant("flush", 64<<10)
+			if grantErr != nil {
+				j.Unlock()
+				j.logger.Error("journal flush budget refused", zap.Error(grantErr))
+				continue
+			}
 			if err = j.flushLocked(); err != nil {
 				j.logger.Error("flush journal", zap.Error(err))
 			}
-			j.Unlock()
 			release()
+			j.Unlock()
 		}
 	}
 }
@@ -357,15 +375,13 @@ func (j *Journal) WriteData(data *Data) (err error) {
 
 // WriteId write id to journal
 func (j *Journal) WriteId(id int64) error {
-	if j.option != nil && j.storageGuard != nil {
-		release, e := j.storageGuard("ack", 64<<10)
-		if e != nil {
-			return e
-		}
-		defer release()
-	}
 	j.RLock() // will blocked by flush & rotate
 	defer j.RUnlock()
+	release, err := j.storageGrant("ack", 64<<10)
+	if err != nil {
+		return err
+	}
+	defer release()
 	select {
 	case <-j.stopChan:
 		return os.ErrClosed
@@ -411,13 +427,6 @@ func (j *Journal) isReadyToRotate() (ok bool) {
 // Rotate serializes rotation with writes, Flush, Sync and Close. A failed
 // replacement-file preparation leaves the current synchronized writer usable.
 func (j *Journal) Rotate(ctx context.Context) error {
-	if j.option != nil && j.storageGuard != nil {
-		release, e := j.storageGuard("rotation", 64<<10)
-		if e != nil {
-			return e
-		}
-		defer release()
-	}
 	return j.rotateUnderGuard(ctx)
 }
 func (j *Journal) rotateUnderGuard(ctx context.Context) error {
@@ -434,6 +443,13 @@ func (j *Journal) rotateUnderGuard(ctx context.Context) error {
 	if j.dirLock == nil {
 		return ErrNotStarted
 	}
+	// All journal operations take the journal lock before the external lease.
+	// This order must also hold for writes, Sync, flush, and cleanup.
+	release, err := j.storageGrant("rotation", 64<<10)
+	if err != nil {
+		return err
+	}
+	defer release()
 	scan := j.LockLegacy()
 	if scan {
 		defer j.UnLockLegacy()
@@ -592,6 +608,14 @@ func (j *Journal) LoadLegacyBuf(data *Data) (err error) {
 
 	if err = j.legacy.Load(data); err == io.EOF {
 		j.logger.Debug("load all legacy data")
+		// Preserve the original legacy EOF/auto-clean API for unguarded callers,
+		// but do not let it bypass a configured storage mutation barrier.
+		release, grantErr := j.storageGrant("cleanup", 64<<10)
+		if grantErr != nil {
+			j.UnLockLegacy()
+			return errors.Wrap(grantErr, "legacy cleanup budget refused")
+		}
+		defer release()
 		if err = j.syncLocked(); err != nil {
 			j.UnLockLegacy()
 			return errors.Wrap(err, "sync replay before cleanup")
@@ -600,6 +624,8 @@ func (j *Journal) LoadLegacyBuf(data *Data) (err error) {
 			j.UnLockLegacy()
 			return errors.Wrap(err, "clean legacy")
 		}
+		j.retainedUnackSeen = false
+		j.retainedAllAcknowledged.Store(true)
 
 		j.UnLockLegacy()
 		return io.EOF
@@ -616,13 +642,6 @@ func (j *Journal) LoadLegacyBuf(data *Data) (err error) {
 // Overlapping callers may share a barrier; sequential calls never reuse a
 // completed result. Each shared barrier still synchronizes both files and dir.
 func (j *Journal) Sync() error {
-	if j.option != nil && j.storageGuard != nil {
-		release, e := j.storageGuard("sync", 64<<10)
-		if e != nil {
-			return e
-		}
-		defer release()
-	}
 	select {
 	case <-j.stopChan:
 		return os.ErrClosed
@@ -642,6 +661,11 @@ func (j *Journal) syncBarrierLocked() error {
 	if j.dataEnc == nil || j.idsEnc == nil {
 		return ErrNotStarted
 	}
+	release, err := j.storageGrant("sync", 64<<10)
+	if err != nil {
+		return err
+	}
+	defer release()
 	return j.syncLocked()
 }
 func (j *Journal) syncLocked() error {
@@ -699,13 +723,6 @@ func (j *Journal) LoadLegacyBufRetained(data *Data) error {
 // CleanLegacyBuf synchronizes current ACKs before retiring the caller-proven
 // resolved frozen snapshot. It never unlocks the caller's legacy ownership.
 func (j *Journal) CleanLegacyBuf() error {
-	if j.option != nil && j.storageGuard != nil {
-		release, e := j.storageGuard("cleanup", 64<<10)
-		if e != nil {
-			return e
-		}
-		defer release()
-	}
 	j.Lock()
 	defer j.Unlock()
 	select {
@@ -719,10 +736,22 @@ func (j *Journal) CleanLegacyBuf() error {
 	if j.legacy == nil {
 		return nil
 	}
+	release, err := j.storageGrant("cleanup", 64<<10)
+	if err != nil {
+		return err
+	}
+	defer release()
 	if err := j.syncLocked(); err != nil {
 		return errors.Wrap(err, "sync retained replay before cleanup")
 	}
-	return j.legacy.Clean()
+	if err := j.legacy.Clean(); err != nil {
+		return err
+	}
+	// The caller supplied explicit retirement permission. No data files from
+	// this frozen snapshot remain; newer writes are tracked independently.
+	j.retainedUnackSeen = false
+	j.retainedAllAcknowledged.Store(true)
+	return nil
 }
 
 // PrepareRetainedReplay rewinds only at caller-proven snapshot EOF. An empty
@@ -752,7 +781,13 @@ func (j *Journal) PrepareRetainedReplay(ctx context.Context) (bool, error) {
 	defer j.UnLockLegacy()
 	defer j.Unlock()
 	if j.retainedACKDirty.Load() {
-		if err := j.syncLocked(); err != nil {
+		release, err := j.storageGrant("sync", 64<<10)
+		if err != nil {
+			return false, err
+		}
+		err = j.syncLocked()
+		release()
+		if err != nil {
 			return false, err
 		}
 		j.retainedACKDirty.Store(false)
@@ -817,7 +852,7 @@ func (j *Journal) guardPreparedData(n int64) (func(), error) {
 	if 2*n+1024 > j.bufSizeBytes {
 		return nil, errors.New("journal record exceeds bounded segment capacity")
 	}
-	release, err := j.storageGuard("data", n)
+	release, err := j.storageGrant("data", n)
 	if err != nil {
 		return nil, err
 	}
@@ -843,19 +878,26 @@ func (j *Journal) HasUnacknowledgedData() bool {
 // original records INCLUDING acknowledged ones. It does not mutate ACK state or
 // delete any segment. Callback must not reenter journal I/O.
 func (j *Journal) ReadRecoveryRecords(ctx context.Context, visit func(*Data) error) (int, error) {
-	if visit == nil {
-		return 0, errors.New("recovery callback required")
+	if ctx == nil || visit == nil {
+		return 0, errors.New("recovery context and callback required")
 	}
-	release := func() {}
-	if j.option != nil && j.storageGuard != nil {
-		var err error
-		release, err = j.storageGuard("recovery", 64<<10)
-		if err != nil {
-			return 0, err
-		}
+	// Close owns the exclusive half before it invalidates rooted descriptors.
+	// Keep this read lease across all callbacks without blocking ordinary writes.
+	j.recoveryMu.RLock()
+	defer j.recoveryMu.RUnlock()
+	j.Lock()
+	select {
+	case <-j.stopChan:
+		j.Unlock()
+		return 0, os.ErrClosed
+	default:
+	}
+	release, err := j.storageGrant("recovery", 64<<10)
+	if err != nil {
+		j.Unlock()
+		return 0, err
 	}
 	defer release()
-	j.Lock()
 	if !j.LockLegacy() {
 		j.Unlock()
 		return 0, ErrDuringRotate

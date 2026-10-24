@@ -60,7 +60,12 @@ WithStorageGuard funds persistent mutations before writing and holds the
 caller's quiescence barrier until release. It receives sizes and mutation kinds,
 never content. Serialization callbacks run exactly once before the grant. A
 guarded journal disables speculative file preallocation; the owner must fund
-startup, ACK/flush/sync/rotation and retain future progress headroom.
+startup, ACK/flush/sync/rotation and retain future progress headroom. Journal
+locks always precede storage grants, including shutdown and legacy EOF cleanup;
+the guard must not call back into Journal or invert this order. Nil successful
+releases are errors. Successful explicit snapshot cleanup clears the old
+obligation, while later writes remain pending independently. Running recovery
+readers are pinned until their callbacks finish before Close releases root FDs.
 
 ReadRecoveryRecords returns originals including acknowledged records from a
 running owner's synchronized prefixes. For operator recovery of a stopped

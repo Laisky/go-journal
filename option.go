@@ -229,6 +229,9 @@ func WithRoot(root *os.Root) OptionFunc {
 
 // StorageGuard funds managed growth before a mutation and holds the owner's
 // quiescence barrier until release. The journal never supplies record contents.
+// Invoked with a journal lock held: implementations must never reenter Journal
+// operations or take another lock that callers hold while waiting on Journal.
+// A successful grant must return a non-nil release function.
 type StorageGuard func(kind string, bytes int64) (release func(), err error)
 
 func WithStorageGuard(guard StorageGuard) OptionFunc {
