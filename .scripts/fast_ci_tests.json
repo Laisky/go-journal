@@ -13,11 +13,26 @@
       "TestRegressionLoggerInterfaceWorkflow",
       "TestRegressionLoggerRejectsNil",
       "TestLoggerConcreteAndInterfaceCallers",
-      "TestJournalRootLockExcludesBothHistoricalLinuxLockKinds"
+      "TestJournalRootLockExcludesBothHistoricalLinuxLockKinds",
+      "TestCodec",
+      "TestCodecBufferedCompletenessControls",
+      "TestRetainedReplayDoesNotCleanBeforeExplicitAcknowledgedRetirement",
+      "TestRetainedCleanupRequiresOwnerAndSuccessfulSync",
+      "TestRetainedPrepareIncludesCurrentACKWithoutNewEmptyData",
+      "TestGuardedJournalEncodableOnlyRunsOnce",
+      "TestRetainedRecoveryUsesOwnedRootAfterRename",
+      "TestClosedRecoveryArchiveExactRawOwnershipAndPreservation",
+      "TestClosedRecoveryArchiveRejectsFreshOversizedTruncatedOrChangedSource",
+      "TestGzipMembersRemainCompleteAcrossFlush",
+      "TestGzipFooterRemainsBufferedUntilFlush",
+      "TestGzipFlushDoesNotAcknowledgeFailedOutput",
+      "TestModuleGraphSecurityFloors",
+      "TestSecurityFloorComparison",
+      "TestStorageGuardRegressionContracts"
     ]
   },
   {
-    "package": "./tests/dependencysecurity",
+    "package": ".",
     "tests": [
       "TestSettingsConsumerContract",
       "TestJWTDependencyRejectsOversizedAndInvalidTokens",
@@ -29,6 +44,7 @@
       "TestRetryableHTTPRedactsURLPassword",
       "TestPromHTTPBoundsUnknownMethodLabels",
       "TestLogrusWriterAcceptsLongLine"
-    ]
+    ],
+    "module_dir": "tests/dependencysecurity"
   }
 ]

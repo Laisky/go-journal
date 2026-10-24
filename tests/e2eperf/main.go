@@ -25,7 +25,7 @@ import (
 	"syscall"
 	"time"
 
-	journal "github.com/Laisky/go-journal"
+	journal "github.com/Laisky/go-journal/v2"
 )
 
 type options struct {
@@ -324,9 +324,6 @@ func workloadSegmentBytes(o options) int64 {
 }
 
 func run(o options) (err error) {
-	if err = journal.Logger.ChangeLevel("error"); err != nil {
-		return err
-	}
 	if err = os.MkdirAll(o.Out, 0700); err != nil {
 		return err
 	}

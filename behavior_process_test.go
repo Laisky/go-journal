@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"github.com/Laisky/zap"
 	"io"
 	"math/rand"
 	"os"
@@ -22,7 +23,7 @@ import (
 	"testing"
 	"time"
 
-	journal "github.com/Laisky/go-journal"
+	journal "github.com/Laisky/go-journal/v2"
 )
 
 type behaviorCommand struct {
@@ -49,7 +50,7 @@ func TestBehaviorProcessHelper(t *testing.T) {
 		return
 	}
 	signal.Ignore(syscall.SIGXFSZ)
-	journal.Logger.ChangeLevel("error")
+
 	reply := func(r behaviorReply) {
 		b, err := json.Marshal(r)
 		if err != nil {
@@ -538,7 +539,7 @@ func TestBehaviorCleanupRetryAfterPartialACKRemoval(t *testing.T) {
 	protected := fmt.Sprintf("/proc/self/fd/%d", blocked.Fd())
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	loader := journal.NewLegacyLoader(ctx, journal.Logger, nil,
+	loader := journal.NewLegacyLoader(ctx, zap.NewNop(), nil,
 		[]string{frontier.Name(), first.Name(), protected, tail.Name(), newest.Name()}, false, time.Hour)
 	if err := loader.Clean(); err == nil {
 		t.Fatal("read-only ACK removal falsely succeeded")

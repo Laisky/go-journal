@@ -136,7 +136,7 @@ func NewInt64SetWithTTL(ctx context.Context, ttl time.Duration) *Int64SetWithTTL
 		ttl = defaultIDSetTTL
 	}
 	if ttl < defaultIDSetTTL {
-		Logger.Warn("TTL too small")
+		defaultLogger.Warn("TTL too small")
 	}
 
 	s := &Int64SetWithTTL{
@@ -145,7 +145,7 @@ func NewInt64SetWithTTL(ctx context.Context, ttl time.Duration) *Int64SetWithTTL
 		ttlNanos: int64(ttl),
 		ng:       newTTLGeneration(),
 	}
-	Logger.Debug("NewInt64SetWithTTL",
+	defaultLogger.Debug("NewInt64SetWithTTL",
 		zap.Duration("ttl", s.ttl),
 	)
 	go s.StartRotate(ctx)
@@ -182,7 +182,7 @@ func (s *Int64SetWithTTL) CheckAndRemove(id int64) (ok bool) {
 	defer s.RUnlock()
 	var vi int64
 	if _, ok = s.ng.Load(id); ok {
-		// Logger.Debug("found in ng")
+		// defaultLogger.Debug("found in ng")
 		return true
 	}
 
@@ -191,11 +191,11 @@ func (s *Int64SetWithTTL) CheckAndRemove(id int64) (ok bool) {
 		t := time.Now().UnixNano()
 		if vi, ok = s.og.Load(id); ok {
 			if vi > t {
-				Logger.Debug("found in og")
+				defaultLogger.Debug("found in og")
 				return true
 			}
 
-			// Logger.Debug("found in og, but expired")
+			// defaultLogger.Debug("found in og, but expired")
 			if _, removed := s.og.LoadAndDelete(id); removed {
 				atomic.AddInt64(&s.ogN, -1)
 			}
@@ -220,7 +220,7 @@ func (s *Int64SetWithTTL) Close() {
 
 // StartRotate start counter rotate
 func (s *Int64SetWithTTL) StartRotate(ctx context.Context) {
-	defer Logger.Info("StartRotate exit")
+	defer defaultLogger.Info("StartRotate exit")
 	ticker := time.NewTicker(s.ttl)
 	defer ticker.Stop()
 	for {

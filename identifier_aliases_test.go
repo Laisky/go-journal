@@ -3,7 +3,7 @@ package journal_test
 import (
 	"context"
 	"errors"
-	journal "github.com/Laisky/go-journal"
+	journal "github.com/Laisky/go-journal/v2"
 	"os"
 	"testing"
 )

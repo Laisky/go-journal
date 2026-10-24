@@ -2,62 +2,75 @@ package journal_test
 
 import (
 	"context"
+	journal "github.com/Laisky/go-journal/v2"
+	"github.com/Laisky/zap"
+	"github.com/Laisky/zap/zapcore"
+	"sync"
 	"testing"
 	"time"
-
-	journal "github.com/Laisky/go-journal"
-	utils "github.com/Laisky/go-utils"
-	"github.com/Laisky/zap"
 )
 
-// Preserve exact types, including callers that store exported functions.
-var _ *utils.LoggerType = journal.Logger
-var _ func(*utils.LoggerType) journal.OptionFunc = journal.WithLogger
-var _ func(context.Context, *utils.LoggerType, []string, []string, bool, time.Duration) *journal.LegacyLoader = journal.NewLegacyLoader
+var _ func(journal.Logger) journal.OptionFunc = journal.WithLogger
+var _ func(context.Context, journal.Logger, []string, []string, bool, time.Duration) *journal.LegacyLoader = journal.NewLegacyLoader
 
-type callerLogger struct{ utils.LoggerItf }
+// The consumer has no Clone/Named/WithOptions, level or embedded Zap methods.
+type callerLogger struct {
+	mu       sync.Mutex
+	messages []string
+}
+
+func (l *callerLogger) record(s string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.messages = append(l.messages, s)
+}
+func (l *callerLogger) Debug(s string, _ ...zapcore.Field) { l.record(s) }
+func (l *callerLogger) Info(s string, _ ...zapcore.Field)  { l.record(s) }
+func (l *callerLogger) Warn(s string, _ ...zapcore.Field)  { l.record(s) }
+func (l *callerLogger) Error(s string, _ ...zapcore.Field) { l.record(s) }
+func (l *callerLogger) Panic(s string, _ ...zapcore.Field) { panic(s) }
+
+var _ journal.Logger = (*callerLogger)(nil)
+var _ journal.Logger = (*zap.Logger)(nil)
 
 func TestLoggerConcreteAndInterfaceCallers(t *testing.T) {
-	// Access to the concrete embedded zap logger remains source-compatible.
-	var embedded *zap.Logger = journal.Logger.Logger
-	if embedded == nil {
-		t.Fatal("missing embedded logger")
-	}
-	factory, err := utils.NewConsoleLoggerWithName("interface-caller", "error")
+	factory, err := zap.NewProduction()
 	if err != nil {
 		t.Fatal(err)
 	}
-	custom := &callerLogger{factory}
-	concrete := journal.Logger
-	for _, option := range []journal.OptionFunc{journal.WithLogger(concrete), journal.WithLoggerInterface(factory), journal.WithLoggerInterface(custom)} {
-		j, err := journal.NewJournal(option, journal.WithBufDirPath(t.TempDir()))
+	custom := &callerLogger{}
+	for _, logger := range []journal.Logger{factory.Named("journal"), zap.NewNop().Named("plain-zap"), custom} {
+		j, err := journal.NewJournal(journal.WithLogger(logger), journal.WithBufDirPath(t.TempDir()))
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := j.Start(t.Context()); err != nil {
+		if err = j.Start(t.Context()); err != nil {
 			t.Fatal(err)
 		}
-		if err := j.WriteData(&journal.Data{ID: 42, Data: map[string]interface{}{"payload": "logger compatibility"}}); err != nil {
+		if err = j.WriteData(&journal.Data{ID: 42, Data: map[string]interface{}{"payload": "logger contract"}}); err != nil {
 			t.Fatal(err)
 		}
-		if err := j.Sync(); err != nil {
+		if err = j.Sync(); err != nil {
 			t.Fatal(err)
 		}
 		j.Close()
-	}
-	if _, err := journal.NewJournal(journal.WithLogger(nil)); err == nil {
-		t.Fatal("nil concrete logger accepted")
-	}
-	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
-	for _, loader := range []*journal.LegacyLoader{
-		journal.NewLegacyLoader(ctx, concrete, nil, nil, false, time.Minute),
-		journal.NewLegacyLoaderWithLoggerInterface(ctx, factory, nil, nil, false, time.Minute),
-		journal.NewLegacyLoaderWithLoggerInterface(ctx, custom, nil, nil, true, time.Minute),
-	} {
+		ctx, cancel := context.WithCancel(t.Context())
+		loader := journal.NewLegacyLoader(ctx, logger, nil, nil, false, time.Minute)
 		loader.AddID(42)
 		if !loader.CheckAndRemove(42) || !loader.CheckAndRemove(42) || loader.GetIdsLen() != 1 {
-			t.Fatal("logger adaptation changed non-consuming acknowledgement membership")
+			t.Fatal("logger changed retained ACK membership")
 		}
+		cancel()
+	}
+	custom.mu.Lock()
+	defer custom.mu.Unlock()
+	found := false
+	for _, s := range custom.messages {
+		if s == "new journal" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("custom small logger was not used")
 	}
 }

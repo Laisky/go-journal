@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	journal "github.com/Laisky/go-journal"
+	journal "github.com/Laisky/go-journal/v2"
 )
 
 // Cold batches include construction, 8192 unique AddInt64 calls and Close.
@@ -19,9 +19,6 @@ func BenchmarkPublicTTLColdInsert(b *testing.B) {
 	}{{"cold-serial", 1}, {"cold-parallel8", 8}} {
 		b.Run(c.name, func(b *testing.B) {
 			b.StopTimer()
-			if err := journal.Logger.ChangeLevel("error"); err != nil {
-				b.Fatal(err)
-			}
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			const count = 8192

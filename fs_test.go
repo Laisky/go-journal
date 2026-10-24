@@ -3,6 +3,8 @@ package journal
 import (
 	"bufio"
 	"context"
+	"github.com/coreos/etcd/pkg/fileutil"
+	"github.com/ncw/directio"
 	"io"
 	"io/ioutil"
 	"log"
@@ -10,10 +12,6 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
-
-	utils "github.com/Laisky/go-utils"
-	"github.com/coreos/etcd/pkg/fileutil"
-	"github.com/ncw/directio"
 )
 
 const (
@@ -161,7 +159,7 @@ func BenchmarkWrite(b *testing.B) {
 	defer os.Remove(fp.Name())
 	b.Logf("create file name: %v", fp.Name())
 
-	data2K := []byte(utils.RandomStringWithLength(2048))
+	data2K := []byte(randomTestString(2048))
 	b.Run("direct write", func(b *testing.B) {
 		for i := 0; i < b.N; i++ {
 			if _, err = fp.Write(data2K); err != nil {
@@ -279,7 +277,7 @@ func BenchmarkData(b *testing.B) {
 
 	data := &Data{
 		ID:   1000,
-		Data: map[string]interface{}{"data": utils.RandomStringWithLength(2048)},
+		Data: map[string]interface{}{"data": randomTestString(2048)},
 	}
 	b.Logf("write data: %+v", data)
 	b.Run("write", func(b *testing.B) {

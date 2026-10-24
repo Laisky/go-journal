@@ -1,37 +1,38 @@
 package journal
 
 import (
+	"compress/gzip"
 	"context"
+	"github.com/tinylib/msgp/msgp"
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
+	"runtime/debug"
 	"sync"
+	"sync/atomic"
 	"time"
 
-	utils "github.com/Laisky/go-utils"
 	"github.com/Laisky/zap"
 	"github.com/pkg/errors"
 )
 
-// Logger is the default journal logger. Its concrete type is retained for callers
-// that use the embedded zap.Logger.
-var Logger *utils.LoggerType
-
-func init() {
-	logger, err := utils.NewConsoleLoggerWithName("go-journal", "info")
-	if err != nil {
-		utils.Logger.Panic("new journal logger", zap.Error(err))
-	}
-	// The pinned go-utils constructor builds a *LoggerType behind its interface.
-	Logger = logger.(*utils.LoggerType)
-}
-
 // Journal redo log consist by msgs and committed ids
 type Journal struct {
+	dataSequence            atomic.Uint64
+	snapshotDataSequence    atomic.Uint64
+	retainedAllAcknowledged atomic.Bool
+	retainedUnackSeen       bool
+
+	activeDataWritten  atomic.Bool
+	activeDataEstimate atomic.Int64
+	retainedACKDirty   atomic.Bool
 	// RWMutex journal rwlock.
 	// acquire write lock when flush/rotate journal legacy.
 	// acquire read lock when read/write journal legacy.
 	sync.RWMutex
+	// Prevent Close from invalidating rooted descriptors during a recovery walk.
+	recoveryMu sync.RWMutex
 	*option
 
 	stopChan       chan struct{}
@@ -43,7 +44,7 @@ type Journal struct {
 	ownedRoot      *os.Root
 	ownedDirectory *rootedDirectory
 	disk           journalFS
-	legacyLock     *utils.Mutex
+	legacyLock     atomic.Bool
 	dataFp, idsFp  *os.File // current writting journal file
 	fsStat         *bufFileStat
 	legacy         *LegacyLoader
@@ -56,9 +57,8 @@ type Journal struct {
 // NewJournal create new Journal
 func NewJournal(opts ...OptionFunc) (j *Journal, err error) {
 	j = &Journal{
-		stopChan:   make(chan struct{}),
-		legacyLock: utils.NewMutex(),
-		option:     newOption(),
+		stopChan: make(chan struct{}),
+		option:   newOption(),
 	}
 
 	for _, optf := range opts {
@@ -151,10 +151,18 @@ func (j *Journal) Close() {
 		close(j.stopChan)
 		j.lifecycleMu.Unlock()
 		j.workers.Wait()
+		j.recoveryMu.Lock()
+		defer j.recoveryMu.Unlock()
 		j.Lock()
 		defer j.Unlock()
-		if err := j.flushLocked(); err != nil {
-			j.logger.Error("flush closing journal", zap.Error(err))
+		if release, err := j.storageGrant("flush", 64<<10); err != nil {
+			// Close has no error result; never bypass a rejected funding boundary.
+			j.logger.Error("journal close flush budget refused", zap.Error(err))
+		} else {
+			if err := j.flushLocked(); err != nil {
+				j.logger.Error("flush closing journal", zap.Error(err))
+			}
+			release()
 		}
 		if j.dataFp != nil {
 			j.dataFp.Close()
@@ -200,6 +208,11 @@ func (j *Journal) initBufDir(ctx context.Context) (err error) {
 func (j *Journal) Flush() error {
 	j.Lock()
 	defer j.Unlock()
+	release, err := j.storageGrant("flush", 64<<10)
+	if err != nil {
+		return err
+	}
+	defer release()
 	select {
 	case <-j.stopChan:
 		return os.ErrClosed
@@ -252,7 +265,19 @@ func (j *Journal) startFlushTrigger(ctx context.Context) {
 	j.logger.Info("start flush trigger", zap.Duration("interval", j.flushInterval))
 	defer j.logger.Info("journal flush exit")
 
-	defer func() { j.Lock(); defer j.Unlock(); j.flushLocked() }()
+	defer func() {
+		j.Lock()
+		defer j.Unlock()
+		release, err := j.storageGrant("flush", 64<<10)
+		if err != nil {
+			j.logger.Error("journal exit flush budget refused", zap.Error(err))
+			return
+		}
+		defer release()
+		if err := j.flushLocked(); err != nil {
+			j.logger.Error("journal exit flush", zap.Error(err))
+		}
+	}()
 	var err error
 	ticker := time.NewTicker(j.flushInterval)
 	defer ticker.Stop()
@@ -264,9 +289,16 @@ func (j *Journal) startFlushTrigger(ctx context.Context) {
 			return
 		case <-ticker.C:
 			j.Lock()
+			release, grantErr := j.storageGrant("flush", 64<<10)
+			if grantErr != nil {
+				j.Unlock()
+				j.logger.Error("journal flush budget refused", zap.Error(grantErr))
+				continue
+			}
 			if err = j.flushLocked(); err != nil {
 				j.logger.Error("flush journal", zap.Error(err))
 			}
+			release()
 			j.Unlock()
 		}
 	}
@@ -331,13 +363,25 @@ func (j *Journal) WriteData(data *Data) (err error) {
 	}
 
 	// j.logger.Debug("write data", zap.Int64("id", GetId(*data)))
-	return j.dataEnc.Write(data)
+	err = j.dataEnc.Write(data)
+	if err == nil {
+		if j.option == nil || j.storageGuard == nil {
+			j.activeDataWritten.Store(true)
+			j.dataSequence.Add(1)
+		}
+	}
+	return err
 }
 
 // WriteId write id to journal
 func (j *Journal) WriteId(id int64) error {
 	j.RLock() // will blocked by flush & rotate
 	defer j.RUnlock()
+	release, err := j.storageGrant("ack", 64<<10)
+	if err != nil {
+		return err
+	}
+	defer release()
 	select {
 	case <-j.stopChan:
 		return os.ErrClosed
@@ -350,6 +394,7 @@ func (j *Journal) WriteId(id int64) error {
 	if err := j.idsEnc.Write(id); err != nil {
 		return err
 	}
+	j.retainedACKDirty.Store(true)
 	j.legacy.AddID(id)
 	return nil
 }
@@ -368,7 +413,7 @@ func (j *Journal) isReadyToRotate() (ok bool) {
 		j.logger.Error("try to get file stat got error", zap.Error(err))
 		ok = false
 	} else if fi.Size() > j.bufSizeBytes ||
-		utils.Clock.GetUTCNow().Sub(j.lastRotateAt) > j.rotateDuration {
+		time.Now().UTC().Sub(j.lastRotateAt) > j.rotateDuration {
 		ok = true
 	}
 
@@ -382,6 +427,9 @@ func (j *Journal) isReadyToRotate() (ok bool) {
 // Rotate serializes rotation with writes, Flush, Sync and Close. A failed
 // replacement-file preparation leaves the current synchronized writer usable.
 func (j *Journal) Rotate(ctx context.Context) error {
+	return j.rotateUnderGuard(ctx)
+}
+func (j *Journal) rotateUnderGuard(ctx context.Context) error {
 	j.Lock()
 	defer j.Unlock()
 	select {
@@ -395,13 +443,24 @@ func (j *Journal) Rotate(ctx context.Context) error {
 	if j.dirLock == nil {
 		return ErrNotStarted
 	}
+	// All journal operations take the journal lock before the external lease.
+	// This order must also hold for writes, Sync, flush, and cleanup.
+	release, err := j.storageGrant("rotation", 64<<10)
+	if err != nil {
+		return err
+	}
+	defer release()
 	scan := j.LockLegacy()
 	if scan {
 		defer j.UnLockLegacy()
 	} else if j.legacy == nil {
 		return ErrDuringRotate
 	}
-	next, err := prepareNewBufFile(j.disk, j.bufDirPath, j.fsStat, scan, j.isCompress, j.bufSizeBytes)
+	preallocate := j.bufSizeBytes
+	if j.option != nil && j.storageGuard != nil {
+		preallocate = 0
+	} // No speculative disk allocation outside the funded mutation.
+	next, err := prepareNewBufFile(j.disk, j.bufDirPath, j.fsStat, scan, j.isCompress, preallocate)
 	if err != nil {
 		return errors.Wrap(err, "prepare new journal files")
 	}
@@ -418,6 +477,9 @@ func (j *Journal) Rotate(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if j.option != nil && j.storageGuard != nil {
+		dataEnc.beforeAppend = j.guardPreparedData
+	}
 	idsEnc, err := NewIdsEncoder(next.NewIDsFp, j.isCompress)
 	if err != nil {
 		return err
@@ -432,11 +494,14 @@ func (j *Journal) Rotate(ctx context.Context) error {
 	j.fsStat = next
 	j.dataFp, j.idsFp = next.NewDataFp, next.NewIDsFp
 	j.dataEnc, j.idsEnc = dataEnc, idsEnc
+	j.activeDataWritten.Store(false)
+	j.activeDataEstimate.Store(0)
+	j.retainedACKDirty.Store(false)
 	installed = true
 	if scan {
 		j.refreshLegacyLoader(ctx)
 	}
-	j.lastRotateAt = utils.Clock.GetUTCNow()
+	j.lastRotateAt = time.Now().UTC()
 	var closeErr error
 	for _, fp := range []*os.File{oldData, oldIDs} {
 		if fp != nil {
@@ -456,7 +521,7 @@ func (j *Journal) refreshLegacyLoader(ctx context.Context) {
 			zap.Strings("data_files", j.fsStat.OldDataFnames),
 			zap.Strings("ids_files", j.fsStat.OldIDsDataFnames),
 		)
-		j.legacy = NewLegacyLoaderWithLoggerInterface(
+		j.legacy = NewLegacyLoader(
 			ctx,
 			j.logger,
 			j.fsStat.OldDataFnames,
@@ -468,9 +533,16 @@ func (j *Journal) refreshLegacyLoader(ctx context.Context) {
 	} else {
 		j.legacy.Reset(j.fsStat.OldDataFnames, j.fsStat.OldIDsDataFnames)
 		if j.isAggresiveGC {
-			utils.TriggerGC()
+			go func() {
+				runtime.GC()
+				debug.FreeOSMemory()
+			}()
 		}
 	}
+	j.snapshotDataSequence.Store(j.dataSequence.Load())
+	j.retainedUnackSeen = false
+	j.retainedAllAcknowledged.Store(len(j.fsStat.OldDataFnames) == 0)
+
 }
 
 // LockLegacy lock legacy to prevent rotate, clean
@@ -481,19 +553,19 @@ func (j *Journal) LockLegacy() bool {
 	default:
 	}
 	j.logger.Debug("call LockLegacy")
-	return j.legacyLock.TryLock()
+	return j.legacyLock.CompareAndSwap(false, true)
 }
 
 // IsLegacyRunning check whether running legacy loading
 func (j *Journal) IsLegacyRunning() bool {
 	j.logger.Debug("call IsLegacyRunning")
-	return j.legacyLock.IsLocked()
+	return j.legacyLock.Load()
 }
 
 // UnLockLegacy release legacy lock
 func (j *Journal) UnLockLegacy() bool {
 	j.logger.Debug("call UnLockLegacy")
-	return j.legacyLock.TryRelease()
+	return j.legacyLock.CompareAndSwap(true, false)
 }
 
 // GetMetric monitor inteface
@@ -536,6 +608,14 @@ func (j *Journal) LoadLegacyBuf(data *Data) (err error) {
 
 	if err = j.legacy.Load(data); err == io.EOF {
 		j.logger.Debug("load all legacy data")
+		// Preserve the original legacy EOF/auto-clean API for unguarded callers,
+		// but do not let it bypass a configured storage mutation barrier.
+		release, grantErr := j.storageGrant("cleanup", 64<<10)
+		if grantErr != nil {
+			j.UnLockLegacy()
+			return errors.Wrap(grantErr, "legacy cleanup budget refused")
+		}
+		defer release()
 		if err = j.syncLocked(); err != nil {
 			j.UnLockLegacy()
 			return errors.Wrap(err, "sync replay before cleanup")
@@ -544,6 +624,8 @@ func (j *Journal) LoadLegacyBuf(data *Data) (err error) {
 			j.UnLockLegacy()
 			return errors.Wrap(err, "clean legacy")
 		}
+		j.retainedUnackSeen = false
+		j.retainedAllAcknowledged.Store(true)
 
 		j.UnLockLegacy()
 		return io.EOF
@@ -579,6 +661,11 @@ func (j *Journal) syncBarrierLocked() error {
 	if j.dataEnc == nil || j.idsEnc == nil {
 		return ErrNotStarted
 	}
+	release, err := j.storageGrant("sync", 64<<10)
+	if err != nil {
+		return err
+	}
+	defer release()
 	return j.syncLocked()
 }
 func (j *Journal) syncLocked() error {
@@ -603,4 +690,293 @@ func (j *Journal) syncLocked() error {
 		}
 	}
 	return nil
+}
+
+// LoadLegacyBufRetained reads a frozen snapshot WITHOUT retiring any segment at
+// EOF. The caller must hold LockLegacy and may retry by rotating after EOF.
+// It must not call CleanLegacyBuf until every unresolved record is durably
+// acknowledged or has its complete terminal evidence retained elsewhere.
+func (j *Journal) LoadLegacyBufRetained(data *Data) error {
+	j.Lock()
+	defer j.Unlock()
+	select {
+	case <-j.stopChan:
+		return os.ErrClosed
+	default:
+	}
+	if !j.IsLegacyRunning() {
+		return errors.New("retained replay requires legacy ownership")
+	}
+	if j.legacy == nil {
+		return io.EOF
+	}
+	err := j.legacy.Load(data)
+	if err == nil {
+		j.retainedUnackSeen = true
+	}
+	if err == io.EOF {
+		j.retainedAllAcknowledged.Store(!j.retainedUnackSeen)
+	}
+	return err
+}
+
+// CleanLegacyBuf synchronizes current ACKs before retiring the caller-proven
+// resolved frozen snapshot. It never unlocks the caller's legacy ownership.
+func (j *Journal) CleanLegacyBuf() error {
+	j.Lock()
+	defer j.Unlock()
+	select {
+	case <-j.stopChan:
+		return os.ErrClosed
+	default:
+	}
+	if !j.IsLegacyRunning() {
+		return errors.New("retained cleanup requires legacy ownership")
+	}
+	if j.legacy == nil {
+		return nil
+	}
+	release, err := j.storageGrant("cleanup", 64<<10)
+	if err != nil {
+		return err
+	}
+	defer release()
+	if err := j.syncLocked(); err != nil {
+		return errors.Wrap(err, "sync retained replay before cleanup")
+	}
+	if err := j.legacy.Clean(); err != nil {
+		return err
+	}
+	// The caller supplied explicit retirement permission. No data files from
+	// this frozen snapshot remain; newer writes are tracked independently.
+	j.retainedUnackSeen = false
+	j.retainedAllAcknowledged.Store(true)
+	return nil
+}
+
+// PrepareRetainedReplay rewinds only at caller-proven snapshot EOF. An empty
+// active data writer is reused, so repeated sink outages do not manufacture
+// empty segments. Current synchronized ACKs are included in the next snapshot.
+// The caller serializes this method with its replay cursor and admission.
+func (j *Journal) PrepareRetainedReplay(ctx context.Context) (bool, error) {
+	j.Lock()
+	select {
+	case <-j.stopChan:
+		j.Unlock()
+		return false, os.ErrClosed
+	default:
+	}
+	if err := ctx.Err(); err != nil {
+		j.Unlock()
+		return false, err
+	}
+	if j.activeDataWritten.Load() {
+		j.Unlock()
+		return true, j.Rotate(ctx)
+	}
+	if !j.LockLegacy() {
+		j.Unlock()
+		return false, ErrDuringRotate
+	}
+	defer j.UnLockLegacy()
+	defer j.Unlock()
+	if j.retainedACKDirty.Load() {
+		release, err := j.storageGrant("sync", 64<<10)
+		if err != nil {
+			return false, err
+		}
+		err = j.syncLocked()
+		release()
+		if err != nil {
+			return false, err
+		}
+		j.retainedACKDirty.Store(false)
+	}
+	entries, err := j.disk.ReadDir(j.bufDirPath)
+	if err != nil {
+		return false, err
+	}
+	var dataNames, idNames []string
+	for _, e := range entries {
+		name := e.Name()
+		full := filepath.Join(j.bufDirPath, name)
+		if dataFileNameReg.MatchString(name) && full != j.dataFp.Name() {
+			dataNames = append(dataNames, full)
+		}
+		if idsFileNameReg.MatchString(name) {
+			idNames = append(idNames, full)
+		}
+	}
+	if j.legacy == nil {
+		return false, ErrNotStarted
+	}
+	j.legacy.Reset(dataNames, idNames)
+	j.snapshotDataSequence.Store(j.dataSequence.Load())
+	j.retainedUnackSeen = false
+	j.retainedAllAcknowledged.Store(false)
+	return false, nil
+}
+
+// HasRetainedData is a conservative metadata observation for a quiescent owner.
+// Nonempty sealed files remain obligations until an acknowledged cleanup pass.
+func (j *Journal) HasRetainedData() (bool, error) {
+	j.RLock()
+	defer j.RUnlock()
+	if j.activeDataWritten.Load() {
+		return true, nil
+	}
+	if j.dataFp == nil {
+		return true, os.ErrClosed
+	}
+	entries, err := j.disk.ReadDir(j.bufDirPath)
+	if err != nil {
+		return true, err
+	}
+	for _, e := range entries {
+		if dataFileNameReg.MatchString(e.Name()) && filepath.Join(j.bufDirPath, e.Name()) != j.dataFp.Name() {
+			st, err := j.disk.Stat(filepath.Join(j.bufDirPath, e.Name()))
+			if err != nil {
+				return true, err
+			}
+			if st.Size() > 0 {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
+
+// guardPreparedData runs AFTER EncodeMsg succeeded exactly once, BEFORE append.
+// It never invokes a user encoder or serializes the record a second time.
+func (j *Journal) guardPreparedData(n int64) (func(), error) {
+	if 2*n+1024 > j.bufSizeBytes {
+		return nil, errors.New("journal record exceeds bounded segment capacity")
+	}
+	release, err := j.storageGrant("data", n)
+	if err != nil {
+		return nil, err
+	}
+	j.dataSequence.Add(1)
+	j.activeDataWritten.Store(true)
+	j.activeDataEstimate.Add(2*n + 1024)
+	return release, nil
+}
+func (j *Journal) RotateIfFull(ctx context.Context) error {
+	if j.storageGuard != nil && j.activeDataEstimate.Load() >= j.bufSizeBytes {
+		return j.Rotate(ctx)
+	}
+	return nil
+}
+
+// HasUnacknowledgedData is logical transport progress, not a durable-sink proof.
+// Atomic-only observation is safe while the owner's mutation barrier is held.
+func (j *Journal) HasUnacknowledgedData() bool {
+	return !j.retainedAllAcknowledged.Load() || j.dataSequence.Load() != j.snapshotDataSequence.Load() || j.activeDataWritten.Load()
+}
+
+// ReadRecoveryRecords captures bounded synchronized file prefixes, then reads
+// original records INCLUDING acknowledged ones. It does not mutate ACK state or
+// delete any segment. Callback must not reenter journal I/O.
+func (j *Journal) ReadRecoveryRecords(ctx context.Context, visit func(*Data) error) (int, error) {
+	if ctx == nil || visit == nil {
+		return 0, errors.New("recovery context and callback required")
+	}
+	// Close owns the exclusive half before it invalidates rooted descriptors.
+	// Keep this read lease across all callbacks without blocking ordinary writes.
+	j.recoveryMu.RLock()
+	defer j.recoveryMu.RUnlock()
+	j.Lock()
+	select {
+	case <-j.stopChan:
+		j.Unlock()
+		return 0, os.ErrClosed
+	default:
+	}
+	release, err := j.storageGrant("recovery", 64<<10)
+	if err != nil {
+		j.Unlock()
+		return 0, err
+	}
+	defer release()
+	if !j.LockLegacy() {
+		j.Unlock()
+		return 0, ErrDuringRotate
+	}
+	defer j.UnLockLegacy()
+	if err := j.syncLocked(); err != nil {
+		j.Unlock()
+		return 0, err
+	}
+	entries, err := j.disk.ReadDir(j.bufDirPath)
+	if err != nil {
+		j.Unlock()
+		return 0, err
+	}
+	type prefix struct {
+		path string
+		size int64
+	}
+	var prefixes []prefix
+	for _, entry := range entries {
+		if !dataFileNameReg.MatchString(entry.Name()) {
+			continue
+		}
+		st, e := j.disk.Stat(filepath.Join(j.bufDirPath, entry.Name()))
+		if e != nil {
+			j.Unlock()
+			return 0, e
+		}
+		if !st.Mode().IsRegular() {
+			j.Unlock()
+			return 0, errors.New("invalid retained recovery file")
+		}
+		if st.Size() > 0 {
+			prefixes = append(prefixes, prefix{filepath.Join(j.bufDirPath, entry.Name()), st.Size()})
+		}
+	}
+	j.Unlock()
+	n := 0
+	for _, p := range prefixes {
+		if err := ctx.Err(); err != nil {
+			return n, err
+		}
+		f, e := j.disk.Open(p.path)
+		if e != nil {
+			return n, e
+		}
+		e = func() error {
+			defer f.Close()
+			var reader io.Reader = io.NewSectionReader(f, 0, p.size)
+			if isFileGZ(p.path) {
+				gz, e := gzip.NewReader(reader)
+				if e != nil {
+					return e
+				}
+				defer gz.Close()
+				reader = gz
+			}
+			decoder := &DataDecoder{reader: msgp.NewReaderSize(reader, readBufferSize)}
+			for {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
+				d := new(Data)
+				err := decoder.Read(d)
+				if err == io.EOF {
+					return nil
+				}
+				if err != nil {
+					return err
+				}
+				if err = visit(d); err != nil {
+					return err
+				}
+				n++
+			}
+		}()
+		if e != nil {
+			return n, e
+		}
+	}
+	return n, nil
 }

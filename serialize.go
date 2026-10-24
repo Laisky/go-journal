@@ -15,7 +15,6 @@ import (
 	"os"
 	"sync"
 
-	utils "github.com/Laisky/go-utils"
 	"github.com/Laisky/zap"
 	"github.com/RoaringBitmap/roaring"
 	"github.com/pkg/errors"
@@ -28,7 +27,6 @@ var (
 )
 
 const (
-	defaultCompressNBlocks = 8
 	// Readers need bounded lookahead, not the 4 MiB writer/compressor buffer.
 	// Individual records may still exceed this size.
 	readBufferSize = 64 << 10
@@ -45,10 +43,11 @@ type BaseSerializer struct {
 
 // DataEncoder data serializer
 type DataEncoder struct {
+	beforeAppend func(int64) (func(), error)
 	BaseSerializer
 	// writeChan chan interface{}
 	writer   *msgp.Writer
-	gzWriter utils.CompressorItf
+	gzWriter *gzipMemberWriter
 	record   recordStage // complete private record, protected by encoder mutex
 	writeErr error       // an incomplete live append must not accept a later record
 }
@@ -67,7 +66,7 @@ type IdsEncoder struct {
 	baseID   int64
 	word     [8]byte // protected by the encoder mutex
 	writer   *bufio.Writer
-	gzWriter utils.CompressorItf
+	gzWriter *gzipMemberWriter
 }
 
 // IdsDecoder ids deserializer
@@ -88,12 +87,7 @@ func NewDataEncoder(fp *os.File, isCompress bool) (enc *DataEncoder, err error) 
 		},
 	}
 	if isCompress {
-		if enc.gzWriter, err = utils.NewGZCompressor(
-			fp,
-			utils.WithCompressBufSizeByte(BufSize),
-			utils.WithCompressLevel(gzip.BestSpeed),
-			utils.WithPGzipNBlocks(defaultCompressNBlocks),
-		); err != nil {
+		if enc.gzWriter, err = newGzipMemberWriter(fp); err != nil {
 			return nil, err
 		}
 		enc.writer = msgp.NewWriterSize(enc.gzWriter, dataWriteBufferSize)
@@ -112,11 +106,7 @@ func NewIdsEncoder(fp *os.File, isCompress bool) (enc *IdsEncoder, err error) {
 		baseID: -1,
 	}
 	if isCompress {
-		if enc.gzWriter, err = utils.NewGZCompressor(
-			fp,
-			utils.WithCompressBufSizeByte(BufSize),
-			utils.WithCompressLevel(gzip.BestSpeed),
-		); err != nil {
+		if enc.gzWriter, err = newGzipMemberWriter(fp); err != nil {
 			return nil, err
 		}
 		enc.writer = bufio.NewWriterSize(enc.gzWriter, BufSize)
@@ -193,6 +183,13 @@ func (enc *DataEncoder) Write(msg *Data) error {
 	// encoders exactly once, and discard all staged bytes when serialization fails.
 	if err := msgp.Encode(&enc.record, msg); err != nil {
 		return errors.Wrap(err, "encode journal data")
+	}
+	if enc.beforeAppend != nil {
+		release, err := enc.beforeAppend(int64(enc.record.Len()))
+		if err != nil {
+			return err
+		}
+		defer release()
 	}
 	n, err := enc.record.appendTo(enc.writer)
 	if err == nil && n != enc.record.Len() {
@@ -288,7 +285,7 @@ func (enc *IdsEncoder) Write(id int64) (err error) {
 	if enc.baseID == -1 {
 		enc.baseID = id
 		offset = id // set first id as baseID
-		Logger.Debug("set write base id", zap.Int64("baseID", id))
+		defaultLogger.Debug("set write base id", zap.Int64("baseID", id))
 	} else {
 		offset = id - enc.baseID // offset
 	}
@@ -304,7 +301,7 @@ func (enc *IdsEncoder) Write(id int64) (err error) {
 		err = enc.gzWriter.WriteFooter()
 	}
 
-	// Logger.Debug("write id", zap.Int64("offset", offset), zap.Int64("id", id))
+	// defaultLogger.Debug("write id", zap.Int64("offset", offset), zap.Int64("id", id))
 	return
 }
 
@@ -393,7 +390,7 @@ func (dec *IdsDecoder) LoadMaxId() (maxId int64, err error) {
 			return 0, errors.Wrap(err, "read ids")
 		}
 
-		// Logger.Debug("load new id", zap.Int64("id", id))
+		// defaultLogger.Debug("load new id", zap.Int64("id", id))
 		if id > maxId {
 			maxId = id
 		}
@@ -424,7 +421,7 @@ func (dec *IdsDecoder) ReadAllToBmap() (ids *roaring.Bitmap, err error) {
 			return nil, errors.Wrap(err, "read ids")
 		}
 
-		// Logger.Debug("load new id", zap.Int64("id", id))
+		// defaultLogger.Debug("load new id", zap.Int64("id", id))
 		if id > math.MaxUint32 {
 			return nil, errors.New("acknowledgement ID does not fit uint32 bitmap")
 		}
@@ -444,7 +441,7 @@ func (dec *IdsDecoder) ReadAllToInt64Set(ids Int64SetItf) (err error) {
 			return errors.Wrap(err, "read ids")
 		}
 
-		// Logger.Debug("load new id", zap.Int64("id", id))
+		// defaultLogger.Debug("load new id", zap.Int64("id", id))
 		ids.AddInt64(id)
 	}
 

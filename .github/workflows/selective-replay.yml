@@ -44,7 +44,7 @@ jobs:
           mkdir -p /tmp/selective-resolve
           cd /tmp/selective-resolve
           go mod init example.invalid/selective-resolve
-          go mod download -json "github.com/Laisky/go-journal@$SOURCE_SHA" > /tmp/selective-evidence/download.json
+          go mod download -json "github.com/Laisky/go-journal/v2@$SOURCE_SHA" > /tmp/selective-evidence/download.json
           python3 - <<'PY'
           import json, pathlib, shutil
           root = pathlib.Path('/tmp/selective-evidence')

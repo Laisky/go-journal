@@ -13,7 +13,6 @@ import (
 	"strings"
 	"time"
 
-	utils "github.com/Laisky/go-utils"
 	"github.com/Laisky/zap"
 	"github.com/coreos/etcd/pkg/fileutil"
 	"github.com/pkg/errors"
@@ -42,7 +41,7 @@ func PrepareDir(path string) error {
 			return errors.Wrapf(err, "create directory `%s` with mod `%d`", path, DirMode)
 		}
 
-		Logger.Info("create new directory", zap.String("path", path))
+		defaultLogger.Info("create new directory", zap.String("path", path))
 		return nil
 	} else if err != nil {
 		return errors.Wrapf(err, "get stat of path `%s`", path)
@@ -71,7 +70,7 @@ func PrepareNewBufFile(dirPath string, oldFsStat *bufFileStat, isScan, isGz bool
 }
 
 func prepareNewBufFile(disk journalFS, dirPath string, oldFsStat *bufFileStat, isScan, isGz bool, sizeBytes int64) (fsStat *bufFileStat, err error) {
-	logger := Logger.With(
+	logger := defaultLogger.With(
 		zap.String("dirpath", dirPath),
 		zap.Bool("is_scan", isScan),
 		zap.Bool("is_gz", isGz),
@@ -136,7 +135,7 @@ func prepareNewBufFile(disk journalFS, dirPath string, oldFsStat *bufFileStat, i
 
 	// generate new buf data file name
 	// `latestxxxFName` means new buf file name now
-	now := utils.Clock.GetUTCNow()
+	now := time.Now().UTC()
 	if latestDataFName == "" {
 		latestDataFName = now.Format(defaultFileNameTimeLayout) + "_00000001.buf"
 	} else {
@@ -187,7 +186,7 @@ func appendGzSuffix(fname string) string {
 
 // OpenBufFile create and open file
 func OpenBufFile(filepath string, preallocateBytes int64) (fp *os.File, err error) {
-	Logger.Debug("create file with preallocate",
+	defaultLogger.Debug("create file with preallocate",
 		zap.Int64("preallocate", preallocateBytes),
 		zap.String("file", filepath))
 	if fp, err = os.OpenFile(filepath, os.O_RDWR|os.O_CREATE, FileMode); err != nil {
@@ -207,7 +206,7 @@ func OpenBufFile(filepath string, preallocateBytes int64) (fp *os.File, err erro
 // GenerateNewBufFName return new buf file name depends on current time
 // file name looks like `yyyymmddnnnn.ids`, nnnn begin from 0001 for each day
 func GenerateNewBufFName(now time.Time, oldFName string) (string, error) {
-	Logger.Debug("GenerateNewBufFName", zap.Time("now", now), zap.String("oldFName", oldFName))
+	defaultLogger.Debug("GenerateNewBufFName", zap.Time("now", now), zap.String("oldFName", oldFName))
 	if !dataFileNameReg.MatchString(oldFName) && !idsFileNameReg.MatchString(oldFName) {
 		return "", fmt.Errorf("invalid journal filename %q", oldFName)
 	}

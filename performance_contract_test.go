@@ -11,7 +11,7 @@ import (
 	"reflect"
 	"testing"
 
-	journal "github.com/Laisky/go-journal"
+	journal "github.com/Laisky/go-journal/v2"
 )
 
 // These contracts deliberately exceed both the proposed read buffer and the

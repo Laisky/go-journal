@@ -28,12 +28,25 @@ def validate(events, expected, returncode):
         raise RuntimeError("missing successful package completion")
 
 
-def run(command, evidence, label, records, timeout=240):
+def module_root(root, suite):
+    value = suite.get("module_dir", ".")
+    if not isinstance(value, str) or not value or Path(value).is_absolute():
+        raise RuntimeError("module directory must be relative to the repository")
+    root = root.resolve()
+    selected = (root / value).resolve()
+    if selected != root and root not in selected.parents:
+        raise RuntimeError("module directory escapes the repository")
+    if not (selected / "go.mod").is_file():
+        raise RuntimeError("module directory has no go.mod")
+    return selected
+
+
+def run(command, evidence, label, records, timeout=240, cwd=None):
     start = time.perf_counter()
-    record = {"label": label, "command": command, "exit_code": None}
+    record = {"label": label, "command": command, "cwd": str(cwd) if cwd else None, "exit_code": None}
     records.append(record)
     try:
-        result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
+        result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout, cwd=cwd)
         record["exit_code"] = result.returncode
         (evidence / f"{label}.stdout").write_bytes(result.stdout)
         (evidence / f"{label}.stderr").write_bytes(result.stderr)
@@ -72,20 +85,27 @@ def main():
         suites = json.loads(Path(".scripts/fast_ci_tests.json").read_text(encoding="utf-8"))
         if not suites:
             raise RuntimeError("no essential test suites configured")
+        root = Path.cwd().resolve()
+        modules = set()
         for index, suite in enumerate(suites):
+            working = module_root(root, suite)
+            if working not in modules and working != root:
+                run(["go", "mod", "verify"], args.evidence, f"module-verify-{index}", records, cwd=working)
+            modules.add(working)
             expected = suite["tests"]
             if not expected or len(expected) != len(set(expected)) or not all(re.fullmatch(r"Test\w+", n) for n in expected):
                 raise RuntimeError("test allowlist must contain unique top-level Test names")
             pattern = "^(" + "|".join(expected) + ")$"
-            discovered = run(["go", "test", "-mod=readonly", "-list", pattern, suite["package"]], args.evidence, f"discover-{index}", records)
+            discovered = run(["go", "test", "-mod=readonly", "-list", pattern, suite["package"]], args.evidence, f"discover-{index}", records, cwd=working)
             names = {line for line in discovered.splitlines() if re.fullmatch(r"Test\w+", line)}
             if names != set(expected):
                 raise RuntimeError(f"test discovery mismatch: expected {expected}, discovered {sorted(names)}")
-            output = run(["go", "test", "-mod=readonly", "-count=1", "-timeout=60s", "-json", "-run", pattern, suite["package"]], args.evidence, f"tests-{index}", records)
+            output = run(["go", "test", "-mod=readonly", "-count=1", "-timeout=60s", "-json", "-run", pattern, suite["package"]], args.evidence, f"tests-{index}", records, cwd=working)
             events = [json.loads(line) for line in output.splitlines() if line.strip()]
             validate(events, expected, records[-1]["exit_code"])
-            print(f"{suite['package']}: {len(expected)} named unit tests passed", flush=True)
-        run(["git", "diff", "--exit-code", "--", "go.mod", "go.sum"], args.evidence, "module-immutability", records)
+            print(f"{suite.get('module_dir', '.')}:{suite['package']}: {len(expected)} named unit tests passed", flush=True)
+        module_files = [str((module / name).relative_to(root)) for module in sorted(modules) for name in ("go.mod", "go.sum")]
+        run(["git", "diff", "--exit-code", "--", *module_files], args.evidence, "module-immutability", records)
         receipt["passed"] = True
     except Exception as exc:
         receipt["error"] = str(exc)

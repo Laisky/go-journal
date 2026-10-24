@@ -5,7 +5,6 @@ import (
 	"os"
 	"time"
 
-	"github.com/Laisky/go-utils"
 	"github.com/Laisky/zap"
 	"github.com/coreos/etcd/pkg/fileutil"
 	"github.com/pkg/errors"
@@ -25,7 +24,9 @@ const (
 
 // option configuration of Journal
 type option struct {
-	logger       utils.LoggerItf
+	storageGuard StorageGuard
+
+	logger       Logger
 	bufDirPath   string
 	root         *os.Root // borrowed until NewJournal duplicates it
 	bufSizeBytes int64
@@ -44,7 +45,7 @@ type option struct {
 
 func newOption() *option {
 	return &option{
-		logger:              Logger,
+		logger:              defaultLogger,
 		bufDirPath:          defaultBufDir,
 		rotateDuration:      defaultRotateDuration,
 		bufSizeBytes:        defaultBufSizeBytes,
@@ -59,18 +60,10 @@ func newOption() *option {
 
 type OptionFunc func(*option) error
 
-// WithLogger sets the journal logger, preserving the concrete logger API.
-func WithLogger(logger *utils.LoggerType) OptionFunc {
-	return WithLoggerInterface(logger)
-}
-
-// WithLoggerInterface accepts go-utils factory results and custom logger implementations.
-func WithLoggerInterface(logger utils.LoggerItf) OptionFunc {
+// WithLogger injects the small logging contract used by the journal.
+func WithLogger(logger Logger) OptionFunc {
 	return func(o *option) error {
-		if logger == nil {
-			return fmt.Errorf("logger cannot be nil")
-		}
-		if concrete, ok := logger.(*utils.LoggerType); ok && concrete == nil {
+		if loggerIsNil(logger) {
 			return fmt.Errorf("logger cannot be nil")
 		}
 
@@ -85,11 +78,11 @@ func WithRotateDuration(d time.Duration) OptionFunc {
 			return fmt.Errorf("WithRotateDuration: duration cannot be negative")
 		}
 		if d == 0 {
-			Logger.Info("rewrite to default config", zap.Duration("rotateDuration", d))
+			defaultLogger.Info("rewrite to default config", zap.Duration("rotateDuration", d))
 			return nil
 		}
 		if d < o.rotateDuration {
-			Logger.Warn("rotateDuration may too short")
+			defaultLogger.Warn("rotateDuration may too short")
 		}
 
 		o.rotateDuration = d
@@ -103,11 +96,11 @@ func WithRotateCheckInterval(d time.Duration) OptionFunc {
 			return fmt.Errorf("WithRotateCheckInterval: duration cannot be negative")
 		}
 		if d == 0 {
-			Logger.Info("rewrite to default config", zap.Duration("rotateCheckInterval", d))
+			defaultLogger.Info("rewrite to default config", zap.Duration("rotateCheckInterval", d))
 			return nil
 		}
 		if d < o.rotateCheckInterval {
-			Logger.Warn("rotateCheckInterval may too short")
+			defaultLogger.Warn("rotateCheckInterval may too short")
 		}
 
 		o.rotateCheckInterval = d
@@ -121,11 +114,11 @@ func WithCommitIDTTL(d time.Duration) OptionFunc {
 			return fmt.Errorf("WithCommitIDTTL: duration cannot be negative")
 		}
 		if d == 0 {
-			Logger.Info("rewrite to default config", zap.Duration("committedIDTTL", d))
+			defaultLogger.Info("rewrite to default config", zap.Duration("committedIDTTL", d))
 			return nil
 		}
 		if d < o.committedIDTTL {
-			Logger.Warn("committedIDTTL may too short")
+			defaultLogger.Warn("committedIDTTL may too short")
 		}
 
 		o.committedIDTTL = d
@@ -139,11 +132,11 @@ func WithFlushInterval(d time.Duration) OptionFunc {
 			return fmt.Errorf("WithFlushInterval: duration cannot be negative")
 		}
 		if d == 0 {
-			Logger.Info("rewrite to default config", zap.Duration("flushInterval", d))
+			defaultLogger.Info("rewrite to default config", zap.Duration("flushInterval", d))
 			return nil
 		}
 		if d < o.flushInterval {
-			Logger.Warn("flushInterval may too short")
+			defaultLogger.Warn("flushInterval may too short")
 		}
 
 		o.flushInterval = d
@@ -154,7 +147,7 @@ func WithFlushInterval(d time.Duration) OptionFunc {
 func WithBufDirPath(path string) OptionFunc {
 	return func(o *option) (err error) {
 		if path == "" {
-			Logger.Info("rewrite to default config", zap.String("bufDirPath", path))
+			defaultLogger.Info("rewrite to default config", zap.String("bufDirPath", path))
 			return nil
 		}
 		if err = fileutil.TouchDirAll(path); err != nil {
@@ -174,7 +167,7 @@ func WithBufDirPath(path string) OptionFunc {
 func WithName(name string) OptionFunc {
 	return func(o *option) (err error) {
 		if name == "" {
-			Logger.Info("rewrite to default config", zap.String("name", name))
+			defaultLogger.Info("rewrite to default config", zap.String("name", name))
 			return nil
 		}
 
@@ -189,12 +182,12 @@ func WithBufSizeByte(bufSize int64) OptionFunc {
 			return fmt.Errorf("buffer size cannot be negative")
 		}
 		if bufSize == 0 {
-			Logger.Info("rewrite to default config", zap.Int64("bufSizeBytes", defaultBufSizeBytes))
+			defaultLogger.Info("rewrite to default config", zap.Int64("bufSizeBytes", defaultBufSizeBytes))
 			return nil
 		}
 
 		if bufSize < 50*1024*1024 {
-			Logger.Warn("buf size bytes too small", zap.Int64("bytes", bufSize))
+			defaultLogger.Warn("buf size bytes too small", zap.Int64("bytes", bufSize))
 		}
 
 		o.bufSizeBytes = bufSize
@@ -232,4 +225,15 @@ func WithRoot(root *os.Root) OptionFunc {
 		o.bufDirPath = root.Name()
 		return nil
 	}
+}
+
+// StorageGuard funds managed growth before a mutation and holds the owner's
+// quiescence barrier until release. The journal never supplies record contents.
+// Invoked with a journal lock held: implementations must never reenter Journal
+// operations or take another lock that callers hold while waiting on Journal.
+// A successful grant must return a non-nil release function.
+type StorageGuard func(kind string, bytes int64) (release func(), err error)
+
+func WithStorageGuard(guard StorageGuard) OptionFunc {
+	return func(o *option) error { o.storageGuard = guard; return nil }
 }

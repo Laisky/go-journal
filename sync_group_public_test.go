@@ -17,7 +17,7 @@ import (
 	"testing"
 	"time"
 
-	journal "github.com/Laisky/go-journal"
+	journal "github.com/Laisky/go-journal/v2"
 )
 
 // Deliberately no Rotate, final Sync or Close between the last individual
@@ -27,7 +27,7 @@ func TestSyncGroupCrashChild(t *testing.T) {
 	if os.Getenv("JOURNAL_SYNC_GROUP_CHILD") != "1" {
 		return
 	}
-	journal.Logger.ChangeLevel("error")
+
 	ack, err := strconv.Atoi(os.Getenv("JOURNAL_SYNC_GROUP_ACK"))
 	if err != nil {
 		t.Fatal(err)
