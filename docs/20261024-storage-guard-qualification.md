@@ -84,3 +84,15 @@ is retargeted there. The post-retarget normal Go check
 and Snyk status both pass on source+documentation head `1272292`.
 Independent merge/release approval, an immutable v2 tag, coordinated consumer
 pinning, real-service acceptance and production rollout are still required.
+
+## Exact-head security check discrepancy
+
+The original post-retarget documentation head `1272292` had a successful Snyk
+status. The next head `61fcb24` changed **only this documentation file**
+(7 additions, 3 deletions): its Go workflow still passed, but the separate
+Snyk commit status reported `error: 1 test has failed`. Its detailed report is
+private and was not available to this review. Neither result establishes a
+change in journal runtime, go.mod, nor the dependency-security fixtures.
+This discrepancy is a reason to recheck the security gate, **not** to waive it
+or claim that all advisories are false positives. No source merge or release is
+authorized while required checks remain failed or unexplained.
