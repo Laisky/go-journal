@@ -54,7 +54,7 @@ func TestGuardedJournalDurableReplayAndArchiveEndToEnd(t *testing.T) {
 			}
 			record := func(id int64, body string) *Data {
 				return &Data{ID: id, Data: map[string]interface{}{
-					"tag": "e2e.recovery",
+					"tag":     "e2e.recovery",
 					"message": map[string]interface{}{"body": body},
 				}}
 			}
