@@ -221,13 +221,14 @@ func TestStorageGuardRegressionContracts(t *testing.T) {
 	})
 	t.Run("writer_rotation_guard_lock_order", func(t *testing.T) {
 		var lease sync.Mutex
+		var armed atomic.Bool
 		rotationGranted := make(chan struct{}, 1)
 		guard := func(kind string, n int64) (func(), error) {
 			if kind != "data" && kind != "rotation" {
 				return func() {}, nil
 			}
 			lease.Lock()
-			if kind == "rotation" {
+			if kind == "rotation" && armed.Load() {
 				select {
 				case rotationGranted <- struct{}{}:
 				default:
@@ -249,6 +250,7 @@ func TestStorageGuardRegressionContracts(t *testing.T) {
 			cancel()
 			t.Fatal(err)
 		}
+		armed.Store(true)
 		// The old writer takes journal.RLock then waits inside the encoder.
 		// The old rotator takes the external guard before journal.Lock.
 		// New code must choose one lock order for both operations.
