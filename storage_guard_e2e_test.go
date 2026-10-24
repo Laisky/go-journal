@@ -65,7 +65,7 @@ func TestGuardedJournalDurableReplayAndArchiveEndToEnd(t *testing.T) {
 			}
 			denyData.Store(false)
 			for _, item := range []struct {
-				id int64
+				id   int64
 				body string
 			}{{101, "delivered"}, {102, "pending"}} {
 				if err := j.WriteData(record(item.id, item.body)); err != nil {
