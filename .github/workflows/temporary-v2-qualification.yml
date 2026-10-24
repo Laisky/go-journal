@@ -5,6 +5,18 @@ on:
 permissions:
   contents: read
 jobs:
+  format-diagnostics:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: '1.27.3'
+      - name: Print gofmt difference for E2E fixture
+        run: gofmt -d storage_guard_e2e_test.go
   qualify:
     runs-on: ubuntu-latest
     timeout-minutes: 25
